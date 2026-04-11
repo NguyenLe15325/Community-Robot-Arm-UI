@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -19,11 +20,18 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QSpinBox,
-    QSplitter,
+    QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
     QCheckBox,
+    QApplication,
 )
+
+if __package__ in (None, ""):
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
 from robot_arm_ui.core.command_executor import CommandExecutor
 from robot_arm_ui.core.frame_transform import FrameTransform
@@ -58,36 +66,68 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         wrapper = QVBoxLayout(root)
-        wrapper.setContentsMargins(10, 10, 10, 10)
+        wrapper.setContentsMargins(16, 16, 16, 16)
+        wrapper.setSpacing(12)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        wrapper.addWidget(splitter)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        wrapper.addWidget(self.tabs)
 
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(self._build_connection_group())
-        left_layout.addWidget(self._build_frame_group())
-        left_layout.addWidget(self._build_move_group())
-        left_layout.addWidget(self._build_jog_group())
-        left_layout.addWidget(self._build_joint_group())
-        left_layout.addWidget(self._build_quick_group())
-        left_layout.addStretch(1)
+        self.tabs.addTab(self._wrap_scroll(self._build_control_page()), "Control")
+        self.tabs.addTab(self._wrap_scroll(self._build_program_page()), "Program")
+        self.tabs.addTab(self._wrap_scroll(self._build_terminal_page()), "Terminal")
+        self.tabs.addTab(self._wrap_scroll(self._build_status_page()), "Status")
 
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.addWidget(self._build_status_group())
-        right_layout.addWidget(self._build_terminal_group(), stretch=1)
-        right_layout.addWidget(self._build_program_group(), stretch=1)
+    def _wrap_scroll(self, content: QWidget) -> QScrollArea:
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QScrollArea.Shape.NoFrame)
+        area.setWidget(content)
+        return area
 
-        splitter.addWidget(left_panel)
-        splitter.addWidget(right_panel)
-        splitter.setSizes([470, 930])
+    def _build_control_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_connection_group())
+        layout.addWidget(self._build_frame_group())
+        layout.addWidget(self._build_move_group())
+        layout.addWidget(self._build_jog_group())
+        layout.addWidget(self._build_joint_group())
+        layout.addWidget(self._build_quick_group())
+        layout.addStretch(1)
+        return page
+
+    def _build_program_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_program_group(), stretch=1)
+        return page
+
+    def _build_terminal_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_terminal_group(), stretch=1)
+        return page
+
+    def _build_status_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_status_group())
+        layout.addStretch(1)
+        return page
 
     def _build_connection_group(self) -> QGroupBox:
         group = QGroupBox("Connection")
         layout = QGridLayout(group)
+        group.setMinimumWidth(520)
 
         self.port_combo = QComboBox()
         self.refresh_button = QPushButton("Refresh")
@@ -100,6 +140,10 @@ class MainWindow(QMainWindow):
         self.connect_button = QPushButton("Connect")
         self.connection_label = QLabel("Disconnected")
         self.connection_label.setObjectName("ConnectionStatus")
+
+        self.port_combo.setMinimumWidth(180)
+        self.baud_combo.setMinimumWidth(120)
+        self.connect_button.setMinimumWidth(110)
 
         layout.addWidget(QLabel("Port"), 0, 0)
         layout.addWidget(self.port_combo, 0, 1)
@@ -115,6 +159,7 @@ class MainWindow(QMainWindow):
     def _build_frame_group(self) -> QGroupBox:
         group = QGroupBox("World Frame Transform (robot -> world)")
         form = QFormLayout(group)
+        group.setMinimumWidth(520)
 
         self.tx_spin = self._float_spin(-1000.0, 1000.0, 0.0)
         self.ty_spin = self._float_spin(-1000.0, 1000.0, 0.0)
@@ -138,6 +183,7 @@ class MainWindow(QMainWindow):
     def _build_move_group(self) -> QGroupBox:
         group = QGroupBox("Cartesian Move")
         layout = QGridLayout(group)
+        group.setMinimumWidth(520)
 
         self.frame_combo = QComboBox()
         self.frame_combo.addItems(["Robot", "World"])
@@ -172,6 +218,7 @@ class MainWindow(QMainWindow):
     def _build_jog_group(self) -> QGroupBox:
         group = QGroupBox("Jog")
         layout = QGridLayout(group)
+        group.setMinimumWidth(520)
 
         self.jog_step_spin = self._float_spin(0.1, 100.0, 5.0)
         self.jog_step_spin.setSingleStep(0.5)
@@ -201,6 +248,7 @@ class MainWindow(QMainWindow):
     def _build_joint_group(self) -> QGroupBox:
         group = QGroupBox("Joint Move")
         layout = QGridLayout(group)
+        group.setMinimumWidth(520)
 
         self.t1_spin = self._float_spin(-90.0, 90.0, 0.0)
         self.t2_spin = self._float_spin(0.0, 130.0, 90.0)
@@ -224,6 +272,7 @@ class MainWindow(QMainWindow):
     def _build_quick_group(self) -> QGroupBox:
         group = QGroupBox("Quick Commands")
         layout = QHBoxLayout(group)
+        group.setMinimumWidth(520)
 
         self.cmd_m17 = QPushButton("M17")
         self.cmd_m18 = QPushButton("M18")
@@ -240,6 +289,7 @@ class MainWindow(QMainWindow):
     def _build_status_group(self) -> QGroupBox:
         group = QGroupBox("Status")
         layout = QFormLayout(group)
+        group.setMinimumWidth(680)
 
         self.robot_pose_label = QLabel("X: --  Y: --  Z: --")
         self.world_pose_label = QLabel("Xw: --  Yw: --  Zw: --")
@@ -254,9 +304,11 @@ class MainWindow(QMainWindow):
     def _build_terminal_group(self) -> QGroupBox:
         group = QGroupBox("Terminal")
         layout = QVBoxLayout(group)
+        group.setMinimumWidth(680)
 
         self.terminal_output = QPlainTextEdit()
         self.terminal_output.setReadOnly(True)
+        self.terminal_output.setMinimumHeight(420)
 
         command_row = QHBoxLayout()
         self.terminal_input = QLineEdit()
@@ -274,10 +326,12 @@ class MainWindow(QMainWindow):
     def _build_program_group(self) -> QGroupBox:
         group = QGroupBox("Program")
         layout = QVBoxLayout(group)
+        group.setMinimumWidth(680)
 
         self.record_checkbox = QCheckBox("Record manual commands into program")
         self.program_editor = QPlainTextEdit()
         self.program_editor.setPlaceholderText("One G-code command per line. ';' starts a comment line.")
+        self.program_editor.setMinimumHeight(500)
 
         button_row = QHBoxLayout()
         self.program_load_button = QPushButton("Load")
@@ -346,7 +400,8 @@ class MainWindow(QMainWindow):
         spin.setRange(minimum, maximum)
         spin.setValue(value)
         spin.setDecimals(3)
-        spin.setSingleStep(1.0)
+        spin.setSingleStep(0.5)
+        spin.setMinimumWidth(130)
         return spin
 
     def _refresh_ports(self) -> None:
@@ -564,48 +619,83 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QWidget {
-                background: #f7f6f2;
-                color: #1f2a30;
+                background: #11161b;
+                color: #e7ecef;
                 font-family: 'Segoe UI';
-                font-size: 12px;
+                font-size: 13px;
             }
             QGroupBox {
-                border: 1px solid #d6d2c4;
+                border: 1px solid #2d3740;
                 border-radius: 10px;
-                margin-top: 12px;
+                margin-top: 14px;
                 padding: 8px;
-                background: #fffdf7;
+                background: #161c22;
                 font-weight: 600;
+                color: #f0f4f7;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
+                left: 12px;
                 padding: 0 5px;
-                color: #44535b;
+                color: #c7d2da;
             }
             QPushButton {
-                background: #e8b84e;
-                color: #1f2a30;
+                background: #2f81f7;
+                color: #f8fbff;
                 border: 0;
                 border-radius: 8px;
-                padding: 8px 10px;
+                padding: 9px 12px;
                 font-weight: 600;
             }
             QPushButton:hover {
-                background: #f0c96f;
+                background: #4a93ff;
             }
             QPushButton:pressed {
-                background: #d59d2a;
+                background: #2166d4;
             }
             QLineEdit, QPlainTextEdit, QComboBox, QDoubleSpinBox, QSpinBox {
-                background: #ffffff;
-                border: 1px solid #c8c2b2;
+                background: #0f1419;
+                color: #eef4f7;
+                border: 1px solid #33404a;
                 border-radius: 6px;
-                padding: 4px;
+                padding: 6px;
+            }
+            QTabWidget::pane {
+                border: 1px solid #2d3740;
+                top: -1px;
+                background: #11161b;
+            }
+            QTabBar::tab {
+                background: #1a2229;
+                color: #b9c6cf;
+                padding: 10px 18px;
+                border: 1px solid #2d3740;
+                border-bottom: none;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                min-width: 100px;
+            }
+            QTabBar::tab:selected {
+                background: #11161b;
+                color: #ffffff;
+            }
+            QTabBar::tab:hover {
+                background: #22303a;
             }
             QLabel#ConnectionStatus {
                 font-weight: 700;
-                color: #0c6b42;
+                color: #6ee7a8;
             }
             """
         )
+
+
+def main() -> int:
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
