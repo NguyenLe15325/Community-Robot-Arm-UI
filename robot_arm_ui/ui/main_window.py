@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_move_group())
         layout.addWidget(self._build_jog_group())
         layout.addWidget(self._build_joint_group())
+        layout.addWidget(self._build_gripper_group())
         layout.addWidget(self._build_quick_group())
         layout.addStretch(1)
         return page
@@ -286,6 +287,31 @@ class MainWindow(QMainWindow):
 
         return group
 
+    def _build_gripper_group(self) -> QGroupBox:
+        group = QGroupBox("Gripper")
+        layout = QGridLayout(group)
+        group.setMinimumWidth(520)
+
+        self.gripper_dist_spin = self._float_spin(0.1, 100.0, 5.0)
+        self.gripper_feed_spin = self._float_spin(0.1, 200.0, 4.0)
+
+        self.gripper_close_button = QPushButton("Close (M3)")
+        self.gripper_open_button = QPushButton("Open (M5)")
+        self.gripper_home_button = QPushButton("Home (M6)")
+        self.gripper_status_button = QPushButton("Status (M3001)")
+
+        layout.addWidget(QLabel("Distance (mm)"), 0, 0)
+        layout.addWidget(self.gripper_dist_spin, 0, 1)
+        layout.addWidget(QLabel("Speed (mm/s)"), 0, 2)
+        layout.addWidget(self.gripper_feed_spin, 0, 3)
+
+        layout.addWidget(self.gripper_close_button, 1, 0)
+        layout.addWidget(self.gripper_open_button, 1, 1)
+        layout.addWidget(self.gripper_home_button, 1, 2)
+        layout.addWidget(self.gripper_status_button, 1, 3)
+
+        return group
+
     def _build_status_group(self) -> QGroupBox:
         group = QGroupBox("Status")
         layout = QFormLayout(group)
@@ -376,6 +402,12 @@ class MainWindow(QMainWindow):
         self.cmd_m114.clicked.connect(lambda: self._submit_command("M114", source="manual", recordable=False))
         self.cmd_m119.clicked.connect(lambda: self._submit_command("M119", source="manual", recordable=False))
         self.cmd_m112.clicked.connect(self._emergency_stop)
+
+        # Gripper controls
+        self.gripper_close_button.clicked.connect(lambda: self._send_gripper("close"))
+        self.gripper_open_button.clicked.connect(lambda: self._send_gripper("open"))
+        self.gripper_home_button.clicked.connect(lambda: self._send_gripper("home"))
+        self.gripper_status_button.clicked.connect(lambda: self._send_gripper("status"))
 
         self.send_terminal_button.clicked.connect(self._send_terminal_line)
         self.terminal_input.returnPressed.connect(self._send_terminal_line)
@@ -522,6 +554,24 @@ class MainWindow(QMainWindow):
             return
         self._submit_command(command, source="manual", recordable=True)
         self.terminal_input.clear()
+
+    def _send_gripper(self, action: str) -> None:
+        dist = self.gripper_dist_spin.value()
+        feed = self.gripper_feed_spin.value()
+
+        if action == "close":
+            # M3 S<mm> F<mm/s>
+            cmd = f"M3 S{fmt_float(dist)} F{fmt_float(feed)}"
+            self._submit_command(cmd, source="manual", recordable=True)
+        elif action == "open":
+            cmd = f"M5 S{fmt_float(dist)} F{fmt_float(feed)}"
+            self._submit_command(cmd, source="manual", recordable=True)
+        elif action == "home":
+            cmd = f"M6 F{fmt_float(feed)}"
+            self._submit_command(cmd, source="manual", recordable=True)
+        elif action == "status":
+            cmd = "M3001"
+            self._submit_command(cmd, source="manual", recordable=False)
 
     def _load_program(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
