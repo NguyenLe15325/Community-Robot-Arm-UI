@@ -38,6 +38,7 @@ from robot_arm_ui.core.frame_transform import FrameTransform
 from robot_arm_ui.core.gcode_utils import build_cartesian_move, build_joint_move, fmt_float, parse_m114
 from robot_arm_ui.core.serial_client import SerialClient
 from robot_arm_ui.models.program_model import ProgramModel
+from robot_arm_ui.ui.vision_widget import VisionWidget
 
 
 class MainWindow(QMainWindow):
@@ -58,6 +59,8 @@ class MainWindow(QMainWindow):
         self._apply_styles()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        if hasattr(self, "vision_widget") and self.vision_widget is not None:
+            self.vision_widget.stop()
         self.serial.disconnect_port()
         super().closeEvent(event)
 
@@ -74,9 +77,15 @@ class MainWindow(QMainWindow):
         wrapper.addWidget(self.tabs)
 
         self.tabs.addTab(self._wrap_scroll(self._build_control_page()), "Control")
+        self.tabs.addTab(self._build_vision_page(), "Vision")
         self.tabs.addTab(self._wrap_scroll(self._build_program_page()), "Program")
         self.tabs.addTab(self._wrap_scroll(self._build_terminal_page()), "Terminal")
         self.tabs.addTab(self._wrap_scroll(self._build_status_page()), "Status")
+
+    def _build_vision_page(self) -> QWidget:
+        self.vision_widget = VisionWidget()
+        self.vision_widget.move_request_world_xy.connect(self._on_vision_move_request)
+        return self.vision_widget
 
     def _wrap_scroll(self, content: QWidget) -> QScrollArea:
         area = QScrollArea()
@@ -165,9 +174,9 @@ class MainWindow(QMainWindow):
         self.tx_spin = self._float_spin(-1000.0, 1000.0, 0.0)
         self.ty_spin = self._float_spin(-1000.0, 1000.0, 0.0)
         self.tz_spin = self._float_spin(-1000.0, 1000.0, 0.0)
-        self.roll_spin = self._float_spin(-180.0, 180.0, 0.0)
-        self.pitch_spin = self._float_spin(-180.0, 180.0, 0.0)
-        self.yaw_spin = self._float_spin(-180.0, 180.0, 0.0)
+        self.roll_spin = self._float_spin(-180.0, 180.0, 90.0)
+        self.pitch_spin = self._float_spin(-180.0, 180.0, 180.0)
+        self.yaw_spin = self._float_spin(-180.0, 180.0, -90.0)
 
         self.apply_frame_button = QPushButton("Apply Transform")
 
@@ -572,6 +581,12 @@ class MainWindow(QMainWindow):
         elif action == "status":
             cmd = "M3001"
             self._submit_command(cmd, source="manual", recordable=False)
+
+    def _on_vision_move_request(self, wx: float, wy: float, wz: float, feed: float) -> None:
+        rx, ry, rz = self.transform.world_to_robot_position(wx, wy, wz)
+        commands = ["G90", build_cartesian_move(rx, ry, rz, feed)]
+        self._submit_commands(commands, source="manual", recordable=True)
+        self._log(f"Vision target queued: world X={fmt_float(wx)} Y={fmt_float(wy)} Z={fmt_float(wz)}")
 
     def _load_program(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
