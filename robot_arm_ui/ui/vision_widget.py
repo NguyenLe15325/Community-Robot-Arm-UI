@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from PyQt6.QtCore import QPoint, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
+from PyQt6.QtGui import QImage, QMouseEvent, QPixmap, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -111,6 +111,12 @@ class VisionWidget(QWidget):
         frame_row = QHBoxLayout()
         self.original_frame_label = ImageLabel("Original frame")
         self.roi_frame_label = ImageLabel("ROI frame (click to sample XY)")
+        # Ensure ROI display has enough horizontal space to avoid clipping
+        # Use the configured ROI width as a sensible minimum for the widget.
+        try:
+            self.roi_frame_label.setMinimumWidth(self.roi_width_spin.value())
+        except Exception:
+            self.roi_frame_label.setMinimumWidth(700)
         frame_row.addWidget(self.original_frame_label, stretch=1)
         frame_row.addWidget(self.roi_frame_label, stretch=1)
         content_layout.addLayout(frame_row)
@@ -523,13 +529,29 @@ class VisionWidget(QWidget):
         )
 
     def _set_image(self, label: QLabel, bgr_frame) -> None:
+        # Convert BGR->RGB and create a QPixmap
         rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         bytes_per_line = ch * w
         image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         pix = QPixmap.fromImage(image)
-        scaled = pix.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        label.setPixmap(scaled)
+
+        # Guard against tiny widget sizes
+        lw = max(1, label.width())
+        lh = max(1, label.height())
+
+        # Scale the source pixmap while preserving aspect ratio
+        scaled = pix.scaled(lw, lh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+        # Compose a background pixmap the size of the label and draw the scaled image centered.
+        bg = QPixmap(lw, lh)
+        bg.fill(Qt.GlobalColor.black)
+        painter = QPainter(bg)
+        x = (lw - scaled.width()) // 2
+        y = (lh - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
+        painter.end()
+        label.setPixmap(bg)
 
     def _on_roi_mouse_click(self, x: int, y: int) -> None:
         if self._latest_roi_size is None or self._latest_roi_to_world is None or not CV_AVAILABLE:
