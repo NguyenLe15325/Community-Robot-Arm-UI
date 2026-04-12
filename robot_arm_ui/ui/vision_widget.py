@@ -73,12 +73,10 @@ class VisionWidget(QWidget):
         self._latest_roi_size: tuple[int, int] | None = None
         self._latest_roi_to_world = None
         self._cursor_world: tuple[float, float] | None = None
-        self._stable_ordered_corners = None
-        self._tracking_gray = None
-        self._tracking_miss_count = 0
-        self._last_roi_frame = None
-        self._roi_hold_frames = 8
-        self._corner_smoothing = 0.25
+        # Keep last-detected marker centers/corners so missing markers
+        # can be substituted with their last-known positions.
+        self._last_marker_centers: dict[int, Any] = {}
+        self._last_marker_corners: dict[int, Any] = {}
 
         self._build_ui()
         self._connect_signals()
@@ -94,10 +92,9 @@ class VisionWidget(QWidget):
             self._cap = None
         self._latest_roi_size = None
         self._latest_roi_to_world = None
-        self._stable_ordered_corners = None
-        self._tracking_gray = None
-        self._tracking_miss_count = 0
-        self._last_roi_frame = None
+        self._cursor_world = None
+        self._last_marker_centers.clear()
+        self._last_marker_corners.clear()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -347,35 +344,15 @@ class VisionWidget(QWidget):
             self.status_label.setText("Camera read failed")
             return
         overlay = frame.copy()
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         ordered = self._detect_ordered_corners(overlay)
         if ordered is not None:
-            stable = self._stabilize_ordered_corners(ordered)
-            self._stable_ordered_corners = stable
-            self._tracking_gray = gray.copy()
-            self._tracking_miss_count = 0
-            self._render_roi(frame, overlay, stable, "ROI detected")
+            self._render_roi(frame, overlay, ordered, "ROI detected")
             return
 
-        tracked = self._track_ordered_corners(gray)
-        if tracked is not None:
-            stable = self._stabilize_ordered_corners(tracked)
-            self._stable_ordered_corners = stable
-            self._tracking_gray = gray.copy()
-            self._tracking_miss_count = 0
-            self._render_roi(frame, overlay, stable, "ROI tracked")
-            return
-
-        if self._stable_ordered_corners is not None and self._tracking_miss_count < self._roi_hold_frames:
-            self._tracking_miss_count += 1
-            self._render_roi(frame, overlay, self._stable_ordered_corners, "ROI held")
-            return
-
-        self._tracking_miss_count += 1
+        # No ROI detected
         self._latest_roi_size = None
         self._latest_roi_to_world = None
-        self._last_roi_frame = None
         self.roi_frame_label.setText("ROI frame\n(need 4 ArUco anchors visible)")
         self.status_label.setText("ROI lost")
 
@@ -391,7 +368,6 @@ class VisionWidget(QWidget):
 
         h_src_to_roi = cv2.getPerspectiveTransform(ordered.astype(np.float32), dst.astype(np.float32))
         roi = cv2.warpPerspective(frame, h_src_to_roi, (roi_w, roi_h))
-        self._last_roi_frame = roi
         self._set_image(self.roi_frame_label, roi)
         self._latest_roi_size = (roi_w, roi_h)
 
@@ -399,55 +375,6 @@ class VisionWidget(QWidget):
         self._latest_roi_to_world = cv2.getPerspectiveTransform(dst.astype(np.float32), world_quad.astype(np.float32))
         self.status_label.setText(status_text)
         self._set_image(self.original_frame_label, overlay)
-
-    def _stabilize_ordered_corners(self, ordered) -> Any:
-        if self._stable_ordered_corners is None:
-            return ordered.astype(np.float32)
-
-        alpha = self._corner_smoothing
-        previous = self._stable_ordered_corners.astype(np.float32)
-        current = ordered.astype(np.float32)
-        return previous * (1.0 - alpha) + current * alpha
-
-    def _track_ordered_corners(self, current_gray) -> Optional[Any]:
-        if self._tracking_gray is None or self._stable_ordered_corners is None or not CV_AVAILABLE:
-            return None
-
-        previous_points = self._stable_ordered_corners.astype(np.float32).reshape(-1, 1, 2)
-        next_points, status, _ = cv2.calcOpticalFlowPyrLK(
-            self._tracking_gray,
-            current_gray,
-            previous_points,
-            None,
-            winSize=(21, 21),
-            maxLevel=3,
-            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
-        )
-
-        if next_points is None or status is None:
-            return None
-
-        next_points = next_points.reshape(-1, 2)
-        status = status.reshape(-1).astype(bool)
-        good_prev = previous_points.reshape(-1, 2)[status]
-        good_next = next_points[status]
-
-        if len(good_next) >= 4:
-            candidate = next_points
-        elif len(good_next) >= 2:
-            affine, _ = cv2.estimateAffinePartial2D(good_prev, good_next, method=cv2.RANSAC, ransacReprojThreshold=3.0)
-            if affine is None:
-                return None
-            ones = np.ones((previous_points.shape[0], 1), dtype=np.float32)
-            expanded = np.concatenate([previous_points.reshape(-1, 2), ones], axis=1)
-            candidate = (expanded @ affine.T).astype(np.float32)
-        else:
-            return None
-
-        if not self._is_valid_quad(candidate):
-            return None
-
-        return candidate
 
     def _is_valid_quad(self, ordered) -> bool:
         if ordered is None:
@@ -463,37 +390,42 @@ class VisionWidget(QWidget):
     def _detect_ordered_corners(self, frame) -> Optional[Any]:
         if not CV_AVAILABLE:
             return None
-
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
         detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
         corners, ids, _ = detector.detectMarkers(frame)
 
-        if ids is None or len(ids) == 0:
-            return None
-
-        cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-
+        # Maps for currently-detected markers
         id_to_center: dict[int, Any] = {}
         id_to_corners: dict[int, Any] = {}
-        for marker_corners, marker_id in zip(corners, ids.flatten().tolist()):
-            pts = marker_corners.reshape(4, 2)
-            center = pts.mean(axis=0)
-            id_to_center[int(marker_id)] = center
-            id_to_corners[int(marker_id)] = pts
+        detected_ids: set[int] = set()
 
-            if self.show_ids_check.isChecked():
-                c = center.astype(int)
-                cv2.putText(
-                    frame,
-                    str(marker_id),
-                    (int(c[0]) + 6, int(c[1]) - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (0, 255, 0),
-                    2,
-                    cv2.LINE_AA,
-                )
-                cv2.circle(frame, (int(c[0]), int(c[1])), 4, (255, 100, 0), -1)
+        if ids is not None and len(ids) > 0:
+            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+            for marker_corners, marker_id in zip(corners, ids.flatten().tolist()):
+                marker_id = int(marker_id)
+                pts = marker_corners.reshape(4, 2).astype(np.float32)
+                center = pts.mean(axis=0).astype(np.float32)
+                id_to_center[marker_id] = center
+                id_to_corners[marker_id] = pts
+                detected_ids.add(marker_id)
+
+                # update last-known positions
+                self._last_marker_centers[marker_id] = center
+                self._last_marker_corners[marker_id] = pts
+
+                if self.show_ids_check.isChecked():
+                    c = center.astype(int)
+                    cv2.putText(
+                        frame,
+                        str(marker_id),
+                        (int(c[0]) + 6, int(c[1]) - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 255, 0),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    cv2.circle(frame, (int(c[0]), int(c[1])), 4, (255, 100, 0), -1)
 
         ordered_ids = [
             self.id_bl_spin.value(),
@@ -509,34 +441,57 @@ class VisionWidget(QWidget):
             self.corner_tl_combo,
         ]
 
-        if not all(marker_id in id_to_center for marker_id in ordered_ids):
-            return None
-
         use_center = self.anchor_mode_combo.currentText().lower() == "center"
         ordered_points = []
+        used_detected_flags: list[bool] = []
+
         for marker_id, corner_combo in zip(ordered_ids, corner_combos):
-            if use_center:
-                point = id_to_center[marker_id]
+            # Prefer current detection, fall back to last-known position
+            if marker_id in id_to_center:
+                if use_center:
+                    point = id_to_center[marker_id]
+                else:
+                    corner_index = corner_combo.currentIndex()
+                    point = id_to_corners[marker_id][corner_index]
+                ordered_points.append(point)
+                used_detected_flags.append(True)
+            elif marker_id in self._last_marker_centers:
+                if use_center:
+                    point = self._last_marker_centers[marker_id]
+                else:
+                    if marker_id in self._last_marker_corners:
+                        corner_index = corner_combo.currentIndex()
+                        point = self._last_marker_corners[marker_id][corner_index]
+                    else:
+                        return None
+                ordered_points.append(point)
+                used_detected_flags.append(False)
             else:
-                corner_index = corner_combo.currentIndex()
-                point = id_to_corners[marker_id][corner_index]
-            ordered_points.append(point)
+                # missing and no fallback available
+                return None
 
         ordered = np.array(ordered_points, dtype=np.float32)
 
         if not self._is_valid_quad(ordered):
             return None
 
-        for idx, p in enumerate(ordered_points):
+        # Draw ordered anchor points: green for current, red for last-known
+        for idx, (marker_id, p) in enumerate(zip(ordered_ids, ordered_points)):
             px, py = int(p[0]), int(p[1])
-            cv2.circle(frame, (px, py), 6, (0, 200, 255), -1)
+            if marker_id in detected_ids:
+                color = (0, 200, 255)
+                label = str(idx)
+            else:
+                color = (0, 0, 255)
+                label = f"{idx}(S)"
+            cv2.circle(frame, (px, py), 6, color, -1)
             cv2.putText(
                 frame,
-                str(idx),
+                label,
                 (px + 6, py + 6),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (0, 200, 255),
+                color,
                 1,
                 cv2.LINE_AA,
             )
