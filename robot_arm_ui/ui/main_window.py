@@ -314,7 +314,8 @@ class MainWindow(QMainWindow):
         layout = QGridLayout(group)
         group.setMinimumWidth(520)
 
-        self.gripper_dist_spin = self._float_spin(0.1, 100.0, 5.0)
+        self.gripper_close_dist_spin = self._float_spin(0.1, 100.0, 5.0)
+        self.gripper_open_dist_spin = self._float_spin(0.1, 100.0, 20.0)
         self.gripper_feed_spin = self._float_spin(0.1, 200.0, 4.0)
 
         self.gripper_close_button = QPushButton("Close (M3)")
@@ -322,15 +323,17 @@ class MainWindow(QMainWindow):
         self.gripper_home_button = QPushButton("Home (M6)")
         self.gripper_status_button = QPushButton("Status (M3001)")
 
-        layout.addWidget(QLabel("Distance (mm)"), 0, 0)
-        layout.addWidget(self.gripper_dist_spin, 0, 1)
-        layout.addWidget(QLabel("Speed (mm/s)"), 0, 2)
-        layout.addWidget(self.gripper_feed_spin, 0, 3)
+        layout.addWidget(QLabel("Close (mm)"), 0, 0)
+        layout.addWidget(self.gripper_close_dist_spin, 0, 1)
+        layout.addWidget(QLabel("Open (mm)"), 0, 2)
+        layout.addWidget(self.gripper_open_dist_spin, 0, 3)
+        layout.addWidget(QLabel("Speed (mm/s)"), 1, 0)
+        layout.addWidget(self.gripper_feed_spin, 1, 1)
 
-        layout.addWidget(self.gripper_close_button, 1, 0)
-        layout.addWidget(self.gripper_open_button, 1, 1)
-        layout.addWidget(self.gripper_home_button, 1, 2)
-        layout.addWidget(self.gripper_status_button, 1, 3)
+        layout.addWidget(self.gripper_close_button, 2, 0)
+        layout.addWidget(self.gripper_open_button, 2, 1)
+        layout.addWidget(self.gripper_home_button, 2, 2)
+        layout.addWidget(self.gripper_status_button, 2, 3)
 
         return group
 
@@ -541,6 +544,14 @@ class MainWindow(QMainWindow):
             if hasattr(self, "vision_widget") and isinstance(vision, dict):
                 self.vision_widget.apply_settings(vision)
 
+                # Sync control-page gripper settings from saved vision settings
+                try:
+                    self.gripper_close_dist_spin.setValue(float(vision.get("gripper_close_dist", self.gripper_close_dist_spin.value())))
+                    self.gripper_open_dist_spin.setValue(float(vision.get("gripper_open_dist", self.gripper_open_dist_spin.value())))
+                    self.gripper_feed_spin.setValue(float(vision.get("gripper_feed", self.gripper_feed_spin.value())))
+                except Exception:
+                    pass
+
             self._settings_path = path
 
             if not silent:
@@ -651,7 +662,13 @@ class MainWindow(QMainWindow):
         self.terminal_input.clear()
 
     def _send_gripper(self, action: str) -> None:
-        dist = self.gripper_dist_spin.value()
+        if action == "close":
+            dist = self.gripper_close_dist_spin.value()
+        elif action == "open":
+            dist = self.gripper_open_dist_spin.value()
+        else:
+            dist = 0.0
+
         feed = self.gripper_feed_spin.value()
 
         if action == "close":

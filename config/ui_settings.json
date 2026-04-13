@@ -30,7 +30,8 @@
     "world_tr_y": 300.0,
     "world_tl_x": 0.0,
     "world_tl_y": 300.0,
-    "gripper_dist": 5.0,
+    "gripper_close_dist": 5.0,
+    "gripper_open_dist": 20.0,
     "gripper_feed": 4.0,
     "places": [
       {
