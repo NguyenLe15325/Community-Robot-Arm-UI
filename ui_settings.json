@@ -1,0 +1,37 @@
+{
+  "transform": {
+    "tx": 0.0,
+    "ty": 0.0,
+    "tz": 0.0,
+    "roll": 90.0,
+    "pitch": 180.0,
+    "yaw": -90.0
+  },
+  "vision": {
+    "camera_index": 0,
+    "show_ids": true,
+    "show_advanced": true,
+    "roi_width": 700,
+    "roi_height": 500,
+    "id_bl": 0,
+    "id_br": 1,
+    "id_tr": 2,
+    "id_tl": 3,
+    "anchor_mode": "Center",
+    "corner_bl": "Top-Right",
+    "corner_br": "Top-Left",
+    "corner_tr": "Bottom-Left",
+    "corner_tl": "Top-Left",
+    "world_bl_x": 0.0,
+    "world_bl_y": 0.0,
+    "world_br_x": 300.0,
+    "world_br_y": 0.0,
+    "world_tr_x": 300.0,
+    "world_tr_y": 300.0,
+    "world_tl_x": 0.0,
+    "world_tl_y": 300.0,
+    "gripper_dist": 5.0,
+    "gripper_feed": 4.0,
+    "places": []
+  }
+}

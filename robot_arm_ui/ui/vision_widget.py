@@ -1,22 +1,27 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from pathlib import Path
 from typing import Any, Optional
 
 from PyQt6.QtCore import QPoint, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QMouseEvent, QPixmap, QPainter
+from PyQt6.QtGui import QImage, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -32,26 +37,14 @@ except Exception:
     CV_AVAILABLE = False
 
 
-@dataclass
-class CornerWorld:
-    x: float
-    y: float
-
-
 class ImageLabel(QLabel):
-    mouse_moved = pyqtSignal(int, int)
     mouse_clicked = pyqtSignal(int, int)
 
     def __init__(self, title: str) -> None:
         super().__init__(title)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMouseTracking(True)
         self.setMinimumSize(620, 420)
         self.setObjectName("VisionFrame")
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
-        self.mouse_moved.emit(event.position().toPoint().x(), event.position().toPoint().y())
-        super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
@@ -61,6 +54,11 @@ class ImageLabel(QLabel):
 
 class VisionWidget(QWidget):
     move_request_world_xy = pyqtSignal(float, float, float, float)
+    gripper_request = pyqtSignal(str, float, float)
+    # Kept for compatibility with existing main-window wiring.
+    place_request_world = pyqtSignal(float, float, float, float, str, float, float)
+    save_settings_requested = pyqtSignal()
+    load_settings_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -73,8 +71,6 @@ class VisionWidget(QWidget):
         self._latest_roi_size: tuple[int, int] | None = None
         self._latest_roi_to_world = None
         self._cursor_world: tuple[float, float] | None = None
-        # Keep last-detected marker centers/corners so missing markers
-        # can be substituted with their last-known positions.
         self._last_marker_centers: dict[int, Any] = {}
         self._last_marker_corners: dict[int, Any] = {}
 
@@ -106,22 +102,17 @@ class VisionWidget(QWidget):
         content_layout.setContentsMargins(8, 8, 8, 8)
         content_layout.setSpacing(12)
 
-        content_layout.addWidget(self._build_controls_group())
+        content_layout.addWidget(self._build_camera_group())
 
         frame_row = QHBoxLayout()
         self.original_frame_label = ImageLabel("Original frame")
-        self.roi_frame_label = ImageLabel("ROI frame (click to sample XY)")
-        # Ensure ROI display has enough horizontal space to avoid clipping
-        # Use the configured ROI width as a sensible minimum for the widget.
-        try:
-            self.roi_frame_label.setMinimumWidth(self.roi_width_spin.value())
-        except Exception:
-            self.roi_frame_label.setMinimumWidth(700)
+        self.roi_frame_label = ImageLabel("ROI frame (click to pick XY)")
         frame_row.addWidget(self.original_frame_label, stretch=1)
         frame_row.addWidget(self.roi_frame_label, stretch=1)
         content_layout.addLayout(frame_row)
 
-        content_layout.addWidget(self._build_cursor_group())
+        content_layout.addWidget(self._build_motion_group())
+        content_layout.addWidget(self._build_places_group())
         content_layout.addStretch(1)
 
         root.addWidget(self._wrap_scroll(content))
@@ -133,7 +124,7 @@ class VisionWidget(QWidget):
         area.setWidget(content)
         return area
 
-    def _build_controls_group(self) -> QGroupBox:
+    def _build_camera_group(self) -> QGroupBox:
         group = QGroupBox("Vision")
         layout = QGridLayout(group)
 
@@ -143,12 +134,13 @@ class VisionWidget(QWidget):
 
         self.start_button = QPushButton("Start Camera")
         self.stop_button = QPushButton("Stop Camera")
-
         self.show_ids_check = QCheckBox("Show marker IDs")
         self.show_ids_check.setChecked(True)
 
-        self.settings_toggle = QCheckBox("Show advanced ROI settings")
-        self.settings_toggle.setChecked(True)
+        self.settings_toggle = QCheckBox("Show advanced settings")
+        self.settings_toggle.setChecked(False)
+        self.save_settings_button = QPushButton("Save Settings")
+        self.load_settings_button = QPushButton("Load Settings")
 
         self.roi_width_spin = QSpinBox()
         self.roi_width_spin.setRange(200, 1600)
@@ -158,17 +150,10 @@ class VisionWidget(QWidget):
         self.roi_height_spin.setRange(200, 1200)
         self.roi_height_spin.setValue(500)
 
-        # Marker IDs for corners in world axes order
-        self.id_bl_spin = QSpinBox()
-        self.id_br_spin = QSpinBox()
-        self.id_tr_spin = QSpinBox()
-        self.id_tl_spin = QSpinBox()
-        for spin in (self.id_bl_spin, self.id_br_spin, self.id_tr_spin, self.id_tl_spin):
-            spin.setRange(0, 49)
-        self.id_bl_spin.setValue(0)
-        self.id_br_spin.setValue(1)
-        self.id_tr_spin.setValue(2)
-        self.id_tl_spin.setValue(3)
+        self.id_bl_spin = QSpinBox(); self.id_bl_spin.setRange(0, 49); self.id_bl_spin.setValue(0)
+        self.id_br_spin = QSpinBox(); self.id_br_spin.setRange(0, 49); self.id_br_spin.setValue(1)
+        self.id_tr_spin = QSpinBox(); self.id_tr_spin.setRange(0, 49); self.id_tr_spin.setValue(2)
+        self.id_tl_spin = QSpinBox(); self.id_tl_spin.setRange(0, 49); self.id_tl_spin.setValue(3)
 
         self.anchor_mode_combo = QComboBox()
         self.anchor_mode_combo.addItems(["Center", "Corner"])
@@ -177,74 +162,14 @@ class VisionWidget(QWidget):
         self.corner_br_combo = QComboBox()
         self.corner_tr_combo = QComboBox()
         self.corner_tl_combo = QComboBox()
-        for combo in (
-            self.corner_bl_combo,
-            self.corner_br_combo,
-            self.corner_tr_combo,
-            self.corner_tl_combo,
-        ):
+        for combo in (self.corner_bl_combo, self.corner_br_combo, self.corner_tr_combo, self.corner_tl_combo):
             combo.addItems(["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"])
 
-        # Typical default for tags placed outside ROI: choose inward-facing marker corners.
         self.corner_bl_combo.setCurrentIndex(1)
         self.corner_br_combo.setCurrentIndex(0)
         self.corner_tr_combo.setCurrentIndex(3)
         self.corner_tl_combo.setCurrentIndex(2)
 
-        layout.addWidget(QLabel("Camera index"), 0, 0)
-        layout.addWidget(self.camera_index_spin, 0, 1)
-        layout.addWidget(self.start_button, 0, 2)
-        layout.addWidget(self.stop_button, 0, 3)
-        layout.addWidget(self.show_ids_check, 0, 4)
-        layout.addWidget(self.settings_toggle, 0, 5)
-
-        self.lbl_roi_width = QLabel("ROI width (px)")
-        self.lbl_roi_height = QLabel("ROI height (px)")
-        self.lbl_id_bl = QLabel("ID bottom-left")
-        self.lbl_id_br = QLabel("ID bottom-right")
-        self.lbl_id_tr = QLabel("ID top-right")
-        self.lbl_id_tl = QLabel("ID top-left")
-        self.lbl_anchor_mode = QLabel("Anchor point mode")
-        self.lbl_corner_bl = QLabel("BL corner")
-        self.lbl_corner_br = QLabel("BR corner")
-        self.lbl_corner_tr = QLabel("TR corner")
-        self.lbl_corner_tl = QLabel("TL corner")
-
-        layout.addWidget(self.lbl_roi_width, 1, 0)
-        layout.addWidget(self.roi_width_spin, 1, 1)
-        layout.addWidget(self.lbl_roi_height, 1, 2)
-        layout.addWidget(self.roi_height_spin, 1, 3)
-
-        layout.addWidget(self.lbl_id_bl, 2, 0)
-        layout.addWidget(self.id_bl_spin, 2, 1)
-        layout.addWidget(self.lbl_id_br, 2, 2)
-        layout.addWidget(self.id_br_spin, 2, 3)
-        layout.addWidget(self.lbl_id_tr, 3, 0)
-        layout.addWidget(self.id_tr_spin, 3, 1)
-        layout.addWidget(self.lbl_id_tl, 3, 2)
-        layout.addWidget(self.id_tl_spin, 3, 3)
-
-        layout.addWidget(self.lbl_anchor_mode, 4, 0)
-        layout.addWidget(self.anchor_mode_combo, 4, 1)
-        layout.addWidget(self.lbl_corner_bl, 4, 2)
-        layout.addWidget(self.corner_bl_combo, 4, 3)
-        layout.addWidget(self.lbl_corner_br, 5, 0)
-        layout.addWidget(self.corner_br_combo, 5, 1)
-        layout.addWidget(self.lbl_corner_tr, 5, 2)
-        layout.addWidget(self.corner_tr_combo, 5, 3)
-        layout.addWidget(self.lbl_corner_tl, 6, 0)
-        layout.addWidget(self.corner_tl_combo, 6, 1)
-
-        self.status_label = QLabel("Waiting for camera")
-        layout.addWidget(self.status_label, 7, 0, 1, 5)
-
-        return group
-
-    def _build_cursor_group(self) -> QGroupBox:
-        group = QGroupBox("ROI World Coordinates")
-        layout = QHBoxLayout(group)
-
-        world_form = QFormLayout()
         self.world_bl_x = self._float_spin(0.0)
         self.world_bl_y = self._float_spin(0.0)
         self.world_br_x = self._float_spin(300.0)
@@ -254,67 +179,248 @@ class VisionWidget(QWidget):
         self.world_tl_x = self._float_spin(0.0)
         self.world_tl_y = self._float_spin(300.0)
 
-        world_form.addRow("BL world X", self.world_bl_x)
-        world_form.addRow("BL world Y", self.world_bl_y)
-        world_form.addRow("BR world X", self.world_br_x)
-        world_form.addRow("BR world Y", self.world_br_y)
-        world_form.addRow("TR world X", self.world_tr_x)
-        world_form.addRow("TR world Y", self.world_tr_y)
-        world_form.addRow("TL world X", self.world_tl_x)
-        world_form.addRow("TL world Y", self.world_tl_y)
+        layout.addWidget(QLabel("Camera index"), 0, 0)
+        layout.addWidget(self.camera_index_spin, 0, 1)
+        layout.addWidget(self.start_button, 0, 2)
+        layout.addWidget(self.stop_button, 0, 3)
+        layout.addWidget(self.show_ids_check, 0, 4)
 
-        cursor_form = QFormLayout()
-        self.cursor_px_label = QLabel("--")
-        self.cursor_world_label = QLabel("X: --  Y: --")
-        self.cursor_z_spin = self._float_spin(0.0)
-        self.cursor_feed_spin = self._float_spin(30.0)
-        self.send_cursor_button = QPushButton("Queue Move To Cursor XY")
+        layout.addWidget(self.settings_toggle, 1, 0)
+        layout.addWidget(self.save_settings_button, 1, 3)
+        layout.addWidget(self.load_settings_button, 1, 4)
 
-        cursor_form.addRow("Cursor ROI (px)", self.cursor_px_label)
-        cursor_form.addRow("Cursor World", self.cursor_world_label)
-        cursor_form.addRow("Target Z (world)", self.cursor_z_spin)
-        cursor_form.addRow("Feed (deg/s)", self.cursor_feed_spin)
-        cursor_form.addRow(self.send_cursor_button)
+        self._advanced_widgets: list[QWidget] = []
 
-        layout.addLayout(world_form)
-        layout.addLayout(cursor_form)
+        self.lbl_roi_w = QLabel("ROI width")
+        self.lbl_roi_h = QLabel("ROI height")
+        self.lbl_id_bl = QLabel("ID BL")
+        self.lbl_id_br = QLabel("ID BR")
+        self.lbl_id_tr = QLabel("ID TR")
+        self.lbl_id_tl = QLabel("ID TL")
+        self.lbl_anchor = QLabel("Anchor mode")
+        self.lbl_corner_bl = QLabel("BL corner")
+        self.lbl_corner_br = QLabel("BR corner")
+        self.lbl_corner_tr = QLabel("TR corner")
+        self.lbl_corner_tl = QLabel("TL corner")
+        self.lbl_w_bl_x = QLabel("World BL X")
+        self.lbl_w_bl_y = QLabel("World BL Y")
+        self.lbl_w_br_x = QLabel("World BR X")
+        self.lbl_w_br_y = QLabel("World BR Y")
+        self.lbl_w_tr_x = QLabel("World TR X")
+        self.lbl_w_tr_y = QLabel("World TR Y")
+        self.lbl_w_tl_x = QLabel("World TL X")
+        self.lbl_w_tl_y = QLabel("World TL Y")
 
+        layout.addWidget(self.lbl_roi_w, 2, 0)
+        layout.addWidget(self.roi_width_spin, 2, 1)
+        layout.addWidget(self.lbl_roi_h, 2, 2)
+        layout.addWidget(self.roi_height_spin, 2, 3)
+
+        layout.addWidget(self.lbl_id_bl, 3, 0)
+        layout.addWidget(self.id_bl_spin, 3, 1)
+        layout.addWidget(self.lbl_id_br, 3, 2)
+        layout.addWidget(self.id_br_spin, 3, 3)
+        layout.addWidget(self.lbl_id_tr, 4, 0)
+        layout.addWidget(self.id_tr_spin, 4, 1)
+        layout.addWidget(self.lbl_id_tl, 4, 2)
+        layout.addWidget(self.id_tl_spin, 4, 3)
+
+        layout.addWidget(self.lbl_anchor, 5, 0)
+        layout.addWidget(self.anchor_mode_combo, 5, 1)
+        layout.addWidget(self.lbl_corner_bl, 5, 2)
+        layout.addWidget(self.corner_bl_combo, 5, 3)
+        layout.addWidget(self.lbl_corner_br, 6, 0)
+        layout.addWidget(self.corner_br_combo, 6, 1)
+        layout.addWidget(self.lbl_corner_tr, 6, 2)
+        layout.addWidget(self.corner_tr_combo, 6, 3)
+        layout.addWidget(self.lbl_corner_tl, 7, 0)
+        layout.addWidget(self.corner_tl_combo, 7, 1)
+
+        layout.addWidget(self.lbl_w_bl_x, 8, 0)
+        layout.addWidget(self.world_bl_x, 8, 1)
+        layout.addWidget(self.lbl_w_bl_y, 8, 2)
+        layout.addWidget(self.world_bl_y, 8, 3)
+
+        layout.addWidget(self.lbl_w_br_x, 9, 0)
+        layout.addWidget(self.world_br_x, 9, 1)
+        layout.addWidget(self.lbl_w_br_y, 9, 2)
+        layout.addWidget(self.world_br_y, 9, 3)
+
+        layout.addWidget(self.lbl_w_tr_x, 10, 0)
+        layout.addWidget(self.world_tr_x, 10, 1)
+        layout.addWidget(self.lbl_w_tr_y, 10, 2)
+        layout.addWidget(self.world_tr_y, 10, 3)
+
+        layout.addWidget(self.lbl_w_tl_x, 11, 0)
+        layout.addWidget(self.world_tl_x, 11, 1)
+        layout.addWidget(self.lbl_w_tl_y, 11, 2)
+        layout.addWidget(self.world_tl_y, 11, 3)
+
+        self._advanced_widgets.extend(
+            [
+                self.lbl_roi_w, self.roi_width_spin, self.lbl_roi_h, self.roi_height_spin,
+                self.lbl_id_bl, self.id_bl_spin, self.lbl_id_br, self.id_br_spin,
+                self.lbl_id_tr, self.id_tr_spin, self.lbl_id_tl, self.id_tl_spin,
+                self.lbl_anchor, self.anchor_mode_combo,
+                self.lbl_corner_bl, self.corner_bl_combo,
+                self.lbl_corner_br, self.corner_br_combo,
+                self.lbl_corner_tr, self.corner_tr_combo,
+                self.lbl_corner_tl, self.corner_tl_combo,
+                self.lbl_w_bl_x, self.world_bl_x, self.lbl_w_bl_y, self.world_bl_y,
+                self.lbl_w_br_x, self.world_br_x, self.lbl_w_br_y, self.world_br_y,
+                self.lbl_w_tr_x, self.world_tr_x, self.lbl_w_tr_y, self.world_tr_y,
+                self.lbl_w_tl_x, self.world_tl_x, self.lbl_w_tl_y, self.world_tl_y,
+            ]
+        )
+
+        self.status_label = QLabel("Waiting for camera")
+        layout.addWidget(self.status_label, 12, 0, 1, 6)
+
+        self._set_advanced_settings_visible(self.settings_toggle.isChecked())
+        return group
+
+    def _build_motion_group(self) -> QGroupBox:
+        group = QGroupBox("Motion & Gripper")
+        layout = QGridLayout(group)
+
+        self.target_x_spin = self._float_spin(0.0)
+        self.target_y_spin = self._float_spin(0.0)
+        self.target_z_spin = self._float_spin(0.0)
+        self.feed_spin = self._float_spin(30.0)
+
+        self.use_cursor_button = QPushButton("Use Cursor XY")
+        self.move_target_button = QPushButton("Move To XY")
+
+        self.jog_xy_step_spin = self._float_spin(5.0)
+        self.jog_z_step_spin = self._float_spin(5.0)
+
+        self.jog_x_minus = QPushButton("X-")
+        self.jog_x_plus = QPushButton("X+")
+        self.jog_y_minus = QPushButton("Y-")
+        self.jog_y_plus = QPushButton("Y+")
+        self.jog_z_minus = QPushButton("Z-")
+        self.jog_z_plus = QPushButton("Z+")
+
+        self.gripper_open_button = QPushButton("Open Gripper")
+        self.gripper_close_button = QPushButton("Close Gripper")
+
+        layout.addWidget(QLabel("Target X"), 0, 0)
+        layout.addWidget(self.target_x_spin, 0, 1)
+        layout.addWidget(QLabel("Target Y"), 0, 2)
+        layout.addWidget(self.target_y_spin, 0, 3)
+        layout.addWidget(QLabel("Target Z"), 0, 4)
+        layout.addWidget(self.target_z_spin, 0, 5)
+
+        layout.addWidget(QLabel("Feed"), 1, 0)
+        layout.addWidget(self.feed_spin, 1, 1)
+        layout.addWidget(self.use_cursor_button, 1, 2)
+        layout.addWidget(self.move_target_button, 1, 3)
+
+        layout.addWidget(QLabel("Jog XY step"), 2, 0)
+        layout.addWidget(self.jog_xy_step_spin, 2, 1)
+        layout.addWidget(self.jog_x_minus, 2, 2)
+        layout.addWidget(self.jog_x_plus, 2, 3)
+        layout.addWidget(self.jog_y_minus, 2, 4)
+        layout.addWidget(self.jog_y_plus, 2, 5)
+
+        layout.addWidget(QLabel("Jog Z step"), 3, 0)
+        layout.addWidget(self.jog_z_step_spin, 3, 1)
+        layout.addWidget(self.jog_z_minus, 3, 2)
+        layout.addWidget(self.jog_z_plus, 3, 3)
+
+        layout.addWidget(self.gripper_open_button, 4, 2)
+        layout.addWidget(self.gripper_close_button, 4, 3)
+
+        return group
+
+    def _build_places_group(self) -> QGroupBox:
+        group = QGroupBox("Place Positions")
+        layout = QVBoxLayout(group)
+
+        top = QGridLayout()
+        self.place_name_input = QLineEdit("P1")
+        self.place_x_spin = self._float_spin(350.0)
+        self.place_y_spin = self._float_spin(0.0)
+        self.place_z_spin = self._float_spin(20.0)
+
+        top.addWidget(QLabel("Name"), 0, 0)
+        top.addWidget(self.place_name_input, 0, 1)
+        top.addWidget(QLabel("X"), 0, 2)
+        top.addWidget(self.place_x_spin, 0, 3)
+        top.addWidget(QLabel("Y"), 0, 4)
+        top.addWidget(self.place_y_spin, 0, 5)
+        top.addWidget(QLabel("Z"), 0, 6)
+        top.addWidget(self.place_z_spin, 0, 7)
+
+        btn_row = QHBoxLayout()
+        self.place_add_button = QPushButton("Add")
+        self.place_update_button = QPushButton("Update")
+        self.place_remove_button = QPushButton("Remove")
+        self.place_load_button = QPushButton("Load Selected")
+        self.place_move_button = QPushButton("Move Selected")
+        self.place_save_button = QPushButton("Save Places")
+        self.place_load_file_button = QPushButton("Load Places")
+
+        for b in (
+            self.place_add_button,
+            self.place_update_button,
+            self.place_remove_button,
+            self.place_load_button,
+            self.place_move_button,
+            self.place_save_button,
+            self.place_load_file_button,
+        ):
+            btn_row.addWidget(b)
+
+        self.place_table = QTableWidget(0, 4)
+        self.place_table.setHorizontalHeaderLabels(["Name", "X", "Y", "Z"])
+        self.place_table.verticalHeader().setVisible(False)
+        self.place_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.place_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.place_table.setMinimumHeight(200)
+
+        layout.addLayout(top)
+        layout.addLayout(btn_row)
+        layout.addWidget(self.place_table)
         return group
 
     def _connect_signals(self) -> None:
         self.start_button.clicked.connect(self._start_camera)
         self.stop_button.clicked.connect(self.stop)
         self.roi_frame_label.mouse_clicked.connect(self._on_roi_mouse_click)
-        self.send_cursor_button.clicked.connect(self._emit_move_request)
+
         self.settings_toggle.toggled.connect(self._set_advanced_settings_visible)
+        self.roi_width_spin.valueChanged.connect(self._sync_roi_display_width)
+        self.save_settings_button.clicked.connect(self.save_settings_requested.emit)
+        self.load_settings_button.clicked.connect(self.load_settings_requested.emit)
+
+        self.use_cursor_button.clicked.connect(self._use_cursor_xy)
+        self.move_target_button.clicked.connect(self._move_target)
+
+        self.jog_x_minus.clicked.connect(lambda: self._jog_target(-self.jog_xy_step_spin.value(), 0.0, 0.0))
+        self.jog_x_plus.clicked.connect(lambda: self._jog_target(self.jog_xy_step_spin.value(), 0.0, 0.0))
+        self.jog_y_minus.clicked.connect(lambda: self._jog_target(0.0, -self.jog_xy_step_spin.value(), 0.0))
+        self.jog_y_plus.clicked.connect(lambda: self._jog_target(0.0, self.jog_xy_step_spin.value(), 0.0))
+        self.jog_z_minus.clicked.connect(lambda: self._jog_target(0.0, 0.0, -self.jog_z_step_spin.value()))
+        self.jog_z_plus.clicked.connect(lambda: self._jog_target(0.0, 0.0, self.jog_z_step_spin.value()))
+
+        self.gripper_open_button.clicked.connect(lambda: self.gripper_request.emit("open", 5.0, 4.0))
+        self.gripper_close_button.clicked.connect(lambda: self.gripper_request.emit("close", 5.0, 4.0))
+
+        self.place_add_button.clicked.connect(self._add_place_row)
+        self.place_update_button.clicked.connect(self._update_place_row)
+        self.place_remove_button.clicked.connect(self._remove_place_row)
+        self.place_load_button.clicked.connect(self._load_selected_place)
+        self.place_move_button.clicked.connect(self._move_selected_place)
+        self.place_save_button.clicked.connect(self._save_places_file)
+        self.place_load_file_button.clicked.connect(self._load_places_file)
 
     def _set_advanced_settings_visible(self, visible: bool) -> None:
-        widgets = [
-            self.lbl_roi_width,
-            self.lbl_roi_height,
-            self.lbl_id_bl,
-            self.lbl_id_br,
-            self.lbl_id_tr,
-            self.lbl_id_tl,
-            self.lbl_anchor_mode,
-            self.lbl_corner_bl,
-            self.lbl_corner_br,
-            self.lbl_corner_tr,
-            self.lbl_corner_tl,
-            self.roi_width_spin,
-            self.roi_height_spin,
-            self.id_bl_spin,
-            self.id_br_spin,
-            self.id_tr_spin,
-            self.id_tl_spin,
-            self.anchor_mode_combo,
-            self.corner_bl_combo,
-            self.corner_br_combo,
-            self.corner_tr_combo,
-            self.corner_tl_combo,
-        ]
-        for widget in widgets:
+        for widget in self._advanced_widgets:
             widget.setVisible(visible)
+
+    def _sync_roi_display_width(self) -> None:
+        self.roi_frame_label.setMinimumWidth(max(300, self.roi_width_spin.value()))
 
     def _float_spin(self, value: float) -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
@@ -328,17 +434,13 @@ class VisionWidget(QWidget):
     def _start_camera(self) -> None:
         if not CV_AVAILABLE:
             return
-
         self.stop()
-        index = self.camera_index_spin.value()
-
-        cap = cv2.VideoCapture(index)
+        cap = cv2.VideoCapture(self.camera_index_spin.value())
         if not cap.isOpened():
-            self.status_label.setText(f"Cannot open camera {index}")
+            self.status_label.setText("Cannot open camera")
             return
-
         self._cap = cap
-        self.status_label.setText(f"Camera {index} running")
+        self.status_label.setText("Camera running")
         self._timer.start()
 
     def _update_frame(self) -> None:
@@ -349,22 +451,20 @@ class VisionWidget(QWidget):
         if not ok:
             self.status_label.setText("Camera read failed")
             return
-        overlay = frame.copy()
 
+        overlay = frame.copy()
         ordered = self._detect_ordered_corners(overlay)
-        if ordered is not None:
-            self._render_roi(frame, overlay, ordered, "ROI detected")
+        if ordered is None:
+            self._latest_roi_size = None
+            self._latest_roi_to_world = None
+            self.roi_frame_label.setText("ROI frame\n(need 4 anchors)")
+            self.status_label.setText("ROI lost")
+            self._set_image(self.original_frame_label, overlay)
             return
 
-        # No ROI detected
-        self._latest_roi_size = None
-        self._latest_roi_to_world = None
-        self.roi_frame_label.setText("ROI frame\n(need 4 ArUco anchors visible)")
-        self.status_label.setText("ROI lost")
+        self._render_roi(frame, overlay, ordered)
 
-        self._set_image(self.original_frame_label, overlay)
-
-    def _render_roi(self, frame, overlay, ordered, status_text: str) -> None:
+    def _render_roi(self, frame, overlay, ordered) -> None:
         polygon = ordered.astype(np.int32).reshape((-1, 1, 2))
         cv2.polylines(overlay, [polygon], isClosed=True, color=(0, 255, 255), thickness=2)
 
@@ -375,32 +475,22 @@ class VisionWidget(QWidget):
         h_src_to_roi = cv2.getPerspectiveTransform(ordered.astype(np.float32), dst.astype(np.float32))
         roi = cv2.warpPerspective(frame, h_src_to_roi, (roi_w, roi_h))
         self._set_image(self.roi_frame_label, roi)
-        self._latest_roi_size = (roi_w, roi_h)
 
+        self._latest_roi_size = (roi_w, roi_h)
         world_quad = self._world_quad()
         self._latest_roi_to_world = cv2.getPerspectiveTransform(dst.astype(np.float32), world_quad.astype(np.float32))
-        self.status_label.setText(status_text)
+
         self._set_image(self.original_frame_label, overlay)
-
-    def _is_valid_quad(self, ordered) -> bool:
-        if ordered is None:
-            return False
-
-        quad = ordered.astype(np.float32)
-        if np.any(~np.isfinite(quad)):
-            return False
-
-        area = abs(cv2.contourArea(quad.reshape((-1, 1, 2))))
-        return area >= 100.0
+        self.status_label.setText("ROI detected")
 
     def _detect_ordered_corners(self, frame) -> Optional[Any]:
         if not CV_AVAILABLE:
             return None
+
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
         detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
         corners, ids, _ = detector.detectMarkers(frame)
 
-        # Maps for currently-detected markers
         id_to_center: dict[int, Any] = {}
         id_to_corners: dict[int, Any] = {}
         detected_ids: set[int] = set()
@@ -414,8 +504,6 @@ class VisionWidget(QWidget):
                 id_to_center[marker_id] = center
                 id_to_corners[marker_id] = pts
                 detected_ids.add(marker_id)
-
-                # update last-known positions
                 self._last_marker_centers[marker_id] = center
                 self._last_marker_corners[marker_id] = pts
 
@@ -439,7 +527,6 @@ class VisionWidget(QWidget):
             self.id_tr_spin.value(),
             self.id_tl_spin.value(),
         ]
-
         corner_combos = [
             self.corner_bl_combo,
             self.corner_br_combo,
@@ -449,60 +536,44 @@ class VisionWidget(QWidget):
 
         use_center = self.anchor_mode_combo.currentText().lower() == "center"
         ordered_points = []
-        used_detected_flags: list[bool] = []
-
         for marker_id, corner_combo in zip(ordered_ids, corner_combos):
-            # Prefer current detection, fall back to last-known position
             if marker_id in id_to_center:
                 if use_center:
                     point = id_to_center[marker_id]
                 else:
-                    corner_index = corner_combo.currentIndex()
-                    point = id_to_corners[marker_id][corner_index]
-                ordered_points.append(point)
-                used_detected_flags.append(True)
+                    point = id_to_corners[marker_id][corner_combo.currentIndex()]
             elif marker_id in self._last_marker_centers:
                 if use_center:
                     point = self._last_marker_centers[marker_id]
+                elif marker_id in self._last_marker_corners:
+                    point = self._last_marker_corners[marker_id][corner_combo.currentIndex()]
                 else:
-                    if marker_id in self._last_marker_corners:
-                        corner_index = corner_combo.currentIndex()
-                        point = self._last_marker_corners[marker_id][corner_index]
-                    else:
-                        return None
-                ordered_points.append(point)
-                used_detected_flags.append(False)
+                    return None
             else:
-                # missing and no fallback available
                 return None
+            ordered_points.append(point)
 
         ordered = np.array(ordered_points, dtype=np.float32)
-
         if not self._is_valid_quad(ordered):
             return None
 
-        # Draw ordered anchor points: green for current, red for last-known
         for idx, (marker_id, p) in enumerate(zip(ordered_ids, ordered_points)):
             px, py = int(p[0]), int(p[1])
-            if marker_id in detected_ids:
-                color = (0, 200, 255)
-                label = str(idx)
-            else:
-                color = (0, 0, 255)
-                label = f"{idx}(S)"
+            color = (0, 200, 255) if marker_id in detected_ids else (0, 0, 255)
+            label = str(idx) if marker_id in detected_ids else f"{idx}(S)"
             cv2.circle(frame, (px, py), 6, color, -1)
-            cv2.putText(
-                frame,
-                label,
-                (px + 6, py + 6),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                1,
-                cv2.LINE_AA,
-            )
+            cv2.putText(frame, label, (px + 6, py + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
         return ordered
+
+    def _is_valid_quad(self, ordered) -> bool:
+        if ordered is None:
+            return False
+        quad = ordered.astype(np.float32)
+        if np.any(~np.isfinite(quad)):
+            return False
+        area = abs(cv2.contourArea(quad.reshape((-1, 1, 2))))
+        return area >= 100.0
 
     def _world_quad(self):
         return np.array(
@@ -516,8 +587,6 @@ class VisionWidget(QWidget):
         )
 
     def _roi_destination_points(self, width: int, height: int):
-        # Pixel coordinate system has origin at top-left.
-        # We map world BL,BR,TR,TL to image BL,BR,TR,TL points.
         return np.array(
             [
                 [0, height - 1],
@@ -529,63 +598,60 @@ class VisionWidget(QWidget):
         )
 
     def _set_image(self, label: QLabel, bgr_frame) -> None:
-        # Convert BGR->RGB and create a QPixmap
         rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         bytes_per_line = ch * w
         image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         pix = QPixmap.fromImage(image)
 
-        # Guard against tiny widget sizes
         lw = max(1, label.width())
         lh = max(1, label.height())
-
-        # Scale the source pixmap while preserving aspect ratio
         scaled = pix.scaled(lw, lh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
 
-        # Compose a background pixmap the size of the label and draw the scaled image centered.
         bg = QPixmap(lw, lh)
         bg.fill(Qt.GlobalColor.black)
         painter = QPainter(bg)
-        x = (lw - scaled.width()) // 2
-        y = (lh - scaled.height()) // 2
-        painter.drawPixmap(x, y, scaled)
+        painter.drawPixmap((lw - scaled.width()) // 2, (lh - scaled.height()) // 2, scaled)
         painter.end()
         label.setPixmap(bg)
 
     def _on_roi_mouse_click(self, x: int, y: int) -> None:
         if self._latest_roi_size is None or self._latest_roi_to_world is None or not CV_AVAILABLE:
             return
-
         mapped = self._map_widget_to_image(self.roi_frame_label, QPoint(x, y), *self._latest_roi_size)
         if mapped is None:
             return
 
         rx, ry = mapped
-        self.cursor_px_label.setText(f"{rx:.1f}, {ry:.1f}")
-
         point = np.array([[[rx, ry]]], dtype=np.float32)
         world = cv2.perspectiveTransform(point, self._latest_roi_to_world)[0][0]
         wx, wy = float(world[0]), float(world[1])
         self._cursor_world = (wx, wy)
         self.cursor_world_label.setText(f"X: {wx:.2f}  Y: {wy:.2f}")
-        self.status_label.setText(f"Cursor captured at world X={wx:.2f}, Y={wy:.2f}")
+        self.status_label.setText(f"Cursor captured: X={wx:.2f}, Y={wy:.2f}")
 
-    def _emit_move_request(self) -> None:
+    def _use_cursor_xy(self) -> None:
         if self._cursor_world is None:
-            self.status_label.setText("Move target unavailable. Click on ROI first.")
+            self.status_label.setText("Click ROI to capture XY first")
             return
+        self.target_x_spin.setValue(self._cursor_world[0])
+        self.target_y_spin.setValue(self._cursor_world[1])
 
-        wx, wy = self._cursor_world
-        self.move_request_world_xy.emit(wx, wy, self.cursor_z_spin.value(), self.cursor_feed_spin.value())
+    def _move_target(self) -> None:
+        self.move_request_world_xy.emit(
+            float(self.target_x_spin.value()),
+            float(self.target_y_spin.value()),
+            float(self.target_z_spin.value()),
+            float(self.feed_spin.value()),
+        )
 
-    def _map_widget_to_image(
-        self,
-        label: QLabel,
-        point: QPoint,
-        img_width: int,
-        img_height: int,
-    ) -> Optional[tuple[float, float]]:
+    def _jog_target(self, dx: float, dy: float, dz: float) -> None:
+        self.target_x_spin.setValue(self.target_x_spin.value() + dx)
+        self.target_y_spin.setValue(self.target_y_spin.value() + dy)
+        self.target_z_spin.setValue(self.target_z_spin.value() + dz)
+        self._move_target()
+
+    def _map_widget_to_image(self, label: QLabel, point: QPoint, img_width: int, img_height: int) -> Optional[tuple[float, float]]:
         w = label.width()
         h = label.height()
         if w <= 1 or h <= 1:
@@ -611,3 +677,222 @@ class VisionWidget(QWidget):
             return None
 
         return float(ix), float(iy)
+
+    def _selected_place_row(self) -> int | None:
+        selected = self.place_table.selectionModel().selectedRows()
+        if not selected:
+            return None
+        return int(selected[0].row())
+
+    def _set_place_row(self, row: int, name: str, x: float, y: float, z: float) -> None:
+        self.place_table.setItem(row, 0, QTableWidgetItem(name))
+        self.place_table.setItem(row, 1, QTableWidgetItem(f"{x:.3f}"))
+        self.place_table.setItem(row, 2, QTableWidgetItem(f"{y:.3f}"))
+        self.place_table.setItem(row, 3, QTableWidgetItem(f"{z:.3f}"))
+
+    def _row_values(self, row: int) -> Optional[tuple[str, float, float, float]]:
+        try:
+            name = self.place_table.item(row, 0).text()
+            x = float(self.place_table.item(row, 1).text())
+            y = float(self.place_table.item(row, 2).text())
+            z = float(self.place_table.item(row, 3).text())
+            return name, x, y, z
+        except Exception:
+            return None
+
+    def _add_place_row(self) -> None:
+        row = self.place_table.rowCount()
+        self.place_table.insertRow(row)
+        self._set_place_row(
+            row,
+            self.place_name_input.text().strip() or f"P{row + 1}",
+            self.place_x_spin.value(),
+            self.place_y_spin.value(),
+            self.place_z_spin.value(),
+        )
+
+    def _update_place_row(self) -> None:
+        row = self._selected_place_row()
+        if row is None:
+            self.status_label.setText("Select place row to update")
+            return
+        self._set_place_row(
+            row,
+            self.place_name_input.text().strip() or f"P{row + 1}",
+            self.place_x_spin.value(),
+            self.place_y_spin.value(),
+            self.place_z_spin.value(),
+        )
+
+    def _remove_place_row(self) -> None:
+        row = self._selected_place_row()
+        if row is None:
+            self.status_label.setText("Select place row to remove")
+            return
+        self.place_table.removeRow(row)
+
+    def _load_selected_place(self) -> None:
+        row = self._selected_place_row()
+        if row is None:
+            self.status_label.setText("Select place row to load")
+            return
+        values = self._row_values(row)
+        if values is None:
+            return
+        name, x, y, z = values
+        self.place_name_input.setText(name)
+        self.place_x_spin.setValue(x)
+        self.place_y_spin.setValue(y)
+        self.place_z_spin.setValue(z)
+        self.target_x_spin.setValue(x)
+        self.target_y_spin.setValue(y)
+        self.target_z_spin.setValue(z)
+
+    def _move_selected_place(self) -> None:
+        row = self._selected_place_row()
+        if row is None:
+            self.status_label.setText("Select place row to move")
+            return
+        values = self._row_values(row)
+        if values is None:
+            return
+        _, x, y, z = values
+        self.move_request_world_xy.emit(x, y, z, float(self.feed_spin.value()))
+
+    def _save_places_file(self) -> None:
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Place Positions",
+            str(Path.home() / "Documents" / "robot_places.json"),
+            "JSON Files (*.json);;All Files (*.*)",
+        )
+        if not path_str:
+            return
+
+        places: list[dict[str, Any]] = []
+        for row in range(self.place_table.rowCount()):
+            values = self._row_values(row)
+            if values is None:
+                continue
+            name, x, y, z = values
+            places.append({"name": name, "x": x, "y": y, "z": z})
+
+        try:
+            Path(path_str).write_text(json.dumps({"places": places}, indent=2), encoding="utf-8")
+            self.status_label.setText(f"Saved places: {path_str}")
+        except Exception as exc:
+            self.status_label.setText(f"Save places failed: {exc}")
+
+    def _load_places_file(self) -> None:
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Place Positions",
+            str(Path.home() / "Documents"),
+            "JSON Files (*.json);;All Files (*.*)",
+        )
+        if not path_str:
+            return
+
+        try:
+            payload = json.loads(Path(path_str).read_text(encoding="utf-8"))
+            self.place_table.setRowCount(0)
+            for place in payload.get("places", []):
+                row = self.place_table.rowCount()
+                self.place_table.insertRow(row)
+                self._set_place_row(
+                    row,
+                    str(place.get("name", f"P{row + 1}")),
+                    float(place.get("x", 0.0)),
+                    float(place.get("y", 0.0)),
+                    float(place.get("z", 0.0)),
+                )
+            self.status_label.setText(f"Loaded places: {path_str}")
+        except Exception as exc:
+            self.status_label.setText(f"Load places failed: {exc}")
+
+    def get_settings(self) -> dict[str, Any]:
+        places: list[dict[str, Any]] = []
+        for row in range(self.place_table.rowCount()):
+            values = self._row_values(row)
+            if values is None:
+                continue
+            name, x, y, z = values
+            places.append({"name": name, "x": x, "y": y, "z": z})
+
+        return {
+            "camera_index": self.camera_index_spin.value(),
+            "show_ids": self.show_ids_check.isChecked(),
+            "show_advanced": self.settings_toggle.isChecked(),
+            "roi_width": self.roi_width_spin.value(),
+            "roi_height": self.roi_height_spin.value(),
+            "id_bl": self.id_bl_spin.value(),
+            "id_br": self.id_br_spin.value(),
+            "id_tr": self.id_tr_spin.value(),
+            "id_tl": self.id_tl_spin.value(),
+            "anchor_mode": self.anchor_mode_combo.currentText(),
+            "corner_bl": self.corner_bl_combo.currentText(),
+            "corner_br": self.corner_br_combo.currentText(),
+            "corner_tr": self.corner_tr_combo.currentText(),
+            "corner_tl": self.corner_tl_combo.currentText(),
+            "world_bl_x": self.world_bl_x.value(),
+            "world_bl_y": self.world_bl_y.value(),
+            "world_br_x": self.world_br_x.value(),
+            "world_br_y": self.world_br_y.value(),
+            "world_tr_x": self.world_tr_x.value(),
+            "world_tr_y": self.world_tr_y.value(),
+            "world_tl_x": self.world_tl_x.value(),
+            "world_tl_y": self.world_tl_y.value(),
+            "target_x": self.target_x_spin.value(),
+            "target_y": self.target_y_spin.value(),
+            "target_z": self.target_z_spin.value(),
+            "feed": self.feed_spin.value(),
+            "jog_xy_step": self.jog_xy_step_spin.value(),
+            "jog_z_step": self.jog_z_step_spin.value(),
+            "places": places,
+        }
+
+    def apply_settings(self, settings: dict[str, Any]) -> None:
+        self.camera_index_spin.setValue(int(settings.get("camera_index", self.camera_index_spin.value())))
+        self.show_ids_check.setChecked(bool(settings.get("show_ids", self.show_ids_check.isChecked())))
+        self.settings_toggle.setChecked(bool(settings.get("show_advanced", self.settings_toggle.isChecked())))
+        self.roi_width_spin.setValue(int(settings.get("roi_width", self.roi_width_spin.value())))
+        self.roi_height_spin.setValue(int(settings.get("roi_height", self.roi_height_spin.value())))
+
+        self.id_bl_spin.setValue(int(settings.get("id_bl", self.id_bl_spin.value())))
+        self.id_br_spin.setValue(int(settings.get("id_br", self.id_br_spin.value())))
+        self.id_tr_spin.setValue(int(settings.get("id_tr", self.id_tr_spin.value())))
+        self.id_tl_spin.setValue(int(settings.get("id_tl", self.id_tl_spin.value())))
+
+        self.anchor_mode_combo.setCurrentText(str(settings.get("anchor_mode", self.anchor_mode_combo.currentText())))
+        self.corner_bl_combo.setCurrentText(str(settings.get("corner_bl", self.corner_bl_combo.currentText())))
+        self.corner_br_combo.setCurrentText(str(settings.get("corner_br", self.corner_br_combo.currentText())))
+        self.corner_tr_combo.setCurrentText(str(settings.get("corner_tr", self.corner_tr_combo.currentText())))
+        self.corner_tl_combo.setCurrentText(str(settings.get("corner_tl", self.corner_tl_combo.currentText())))
+
+        self.world_bl_x.setValue(float(settings.get("world_bl_x", self.world_bl_x.value())))
+        self.world_bl_y.setValue(float(settings.get("world_bl_y", self.world_bl_y.value())))
+        self.world_br_x.setValue(float(settings.get("world_br_x", self.world_br_x.value())))
+        self.world_br_y.setValue(float(settings.get("world_br_y", self.world_br_y.value())))
+        self.world_tr_x.setValue(float(settings.get("world_tr_x", self.world_tr_x.value())))
+        self.world_tr_y.setValue(float(settings.get("world_tr_y", self.world_tr_y.value())))
+        self.world_tl_x.setValue(float(settings.get("world_tl_x", self.world_tl_x.value())))
+        self.world_tl_y.setValue(float(settings.get("world_tl_y", self.world_tl_y.value())))
+
+        self.target_x_spin.setValue(float(settings.get("target_x", self.target_x_spin.value())))
+        self.target_y_spin.setValue(float(settings.get("target_y", self.target_y_spin.value())))
+        self.target_z_spin.setValue(float(settings.get("target_z", self.target_z_spin.value())))
+        self.feed_spin.setValue(float(settings.get("feed", self.feed_spin.value())))
+        self.jog_xy_step_spin.setValue(float(settings.get("jog_xy_step", self.jog_xy_step_spin.value())))
+        self.jog_z_step_spin.setValue(float(settings.get("jog_z_step", self.jog_z_step_spin.value())))
+
+        self.place_table.setRowCount(0)
+        for place in settings.get("places", []):
+            row = self.place_table.rowCount()
+            self.place_table.insertRow(row)
+            self._set_place_row(
+                row,
+                str(place.get("name", f"P{row + 1}")),
+                float(place.get("x", 0.0)),
+                float(place.get("y", 0.0)),
+                float(place.get("z", 0.0)),
+            )

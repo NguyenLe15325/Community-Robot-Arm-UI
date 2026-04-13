@@ -1,0 +1,46 @@
+{
+  "transform": {
+    "tx": 0.0,
+    "ty": 0.0,
+    "tz": 0.0,
+    "roll": 90.0,
+    "pitch": 180.0,
+    "yaw": -90.0
+  },
+  "vision": {
+    "camera_index": 0,
+    "show_ids": false,
+    "show_advanced": false,
+    "roi_width": 700,
+    "roi_height": 500,
+    "id_bl": 0,
+    "id_br": 1,
+    "id_tr": 2,
+    "id_tl": 1,
+    "anchor_mode": "Center",
+    "corner_bl": "Top-Left",
+    "corner_br": "Top-Left",
+    "corner_tr": "Top-Right",
+    "corner_tl": "Bottom-Right",
+    "world_bl_x": 0.0,
+    "world_bl_y": 5.0,
+    "world_br_x": 300.0,
+    "world_br_y": 1.0,
+    "world_tr_x": 300.0,
+    "world_tr_y": 300.0,
+    "world_tl_x": 0.0,
+    "world_tl_y": 300.0,
+    "gripper_dist": 5.0,
+    "gripper_feed": 4.0,
+    "places": [
+      {
+        "name": "P1",
+        "x": 350.0,
+        "y": 0.0,
+        "z": 20.0,
+        "feed": 30.0,
+        "grip": "None"
+      }
+    ]
+  }
+}

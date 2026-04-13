@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -52,13 +53,16 @@ class MainWindow(QMainWindow):
         self.program_model = ProgramModel()
         self.transform = FrameTransform()
         self._queue_size = 0
+        self._settings_path = self._default_external_settings_path()
 
         self._build_ui()
         self._connect_signals()
         self._refresh_ports()
+        self._load_app_settings(silent=True)
         self._apply_styles()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._save_app_settings(silent=True)
         if hasattr(self, "vision_widget") and self.vision_widget is not None:
             self.vision_widget.stop()
         self.serial.disconnect_port()
@@ -85,7 +89,16 @@ class MainWindow(QMainWindow):
     def _build_vision_page(self) -> QWidget:
         self.vision_widget = VisionWidget()
         self.vision_widget.move_request_world_xy.connect(self._on_vision_move_request)
+        self.vision_widget.gripper_request.connect(self._on_vision_gripper_request)
+        self.vision_widget.place_request_world.connect(self._on_vision_place_request)
+        self.vision_widget.save_settings_requested.connect(self._save_app_settings_as)
+        self.vision_widget.load_settings_requested.connect(self._load_app_settings_from)
         return self.vision_widget
+
+    def _default_external_settings_path(self) -> Path:
+        docs = Path.home() / "Documents"
+        base = docs if docs.exists() else Path.home()
+        return base / "Community-Robot-Arm-UI" / "ui_settings.json"
 
     def _wrap_scroll(self, content: QWidget) -> QScrollArea:
         area = QScrollArea()
@@ -485,6 +498,79 @@ class MainWindow(QMainWindow):
         )
         self._log("World transform updated")
 
+    def _save_app_settings(self, silent: bool, target_path: Path | None = None) -> None:
+        try:
+            path = target_path or self._settings_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "transform": {
+                    "tx": self.tx_spin.value(),
+                    "ty": self.ty_spin.value(),
+                    "tz": self.tz_spin.value(),
+                    "roll": self.roll_spin.value(),
+                    "pitch": self.pitch_spin.value(),
+                    "yaw": self.yaw_spin.value(),
+                },
+                "vision": self.vision_widget.get_settings() if hasattr(self, "vision_widget") else {},
+            }
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            self._settings_path = path
+            if not silent:
+                self._log(f"Settings saved: {path}")
+        except Exception as exc:
+            if not silent:
+                QMessageBox.warning(self, "Settings", f"Failed to save settings:\n{exc}")
+
+    def _load_app_settings(self, silent: bool, source_path: Path | None = None) -> None:
+        path = source_path or self._settings_path
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+            transform = payload.get("transform", {})
+            self.tx_spin.setValue(float(transform.get("tx", self.tx_spin.value())))
+            self.ty_spin.setValue(float(transform.get("ty", self.ty_spin.value())))
+            self.tz_spin.setValue(float(transform.get("tz", self.tz_spin.value())))
+            self.roll_spin.setValue(float(transform.get("roll", self.roll_spin.value())))
+            self.pitch_spin.setValue(float(transform.get("pitch", self.pitch_spin.value())))
+            self.yaw_spin.setValue(float(transform.get("yaw", self.yaw_spin.value())))
+            self._apply_transform()
+
+            vision = payload.get("vision", {})
+            if hasattr(self, "vision_widget") and isinstance(vision, dict):
+                self.vision_widget.apply_settings(vision)
+
+            self._settings_path = path
+
+            if not silent:
+                self._log(f"Settings loaded: {path}")
+        except Exception as exc:
+            if not silent:
+                QMessageBox.warning(self, "Settings", f"Failed to load settings:\n{exc}")
+
+    def _save_app_settings_as(self) -> None:
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Settings File",
+            str(self._settings_path),
+            "JSON Files (*.json);;All Files (*.*)",
+        )
+        if not path_str:
+            return
+        self._save_app_settings(silent=False, target_path=Path(path_str))
+
+    def _load_app_settings_from(self) -> None:
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Settings File",
+            str(self._settings_path.parent),
+            "JSON Files (*.json);;All Files (*.*)",
+        )
+        if not path_str:
+            return
+        self._load_app_settings(silent=False, source_path=Path(path_str))
+
     def _send_cartesian_move(self) -> None:
         frame = self.frame_combo.currentText().lower()
         mode = self.mode_combo.currentText().lower()
@@ -587,6 +673,42 @@ class MainWindow(QMainWindow):
         commands = ["G90", build_cartesian_move(rx, ry, rz, feed)]
         self._submit_commands(commands, source="manual", recordable=True)
         self._log(f"Vision target queued: world X={fmt_float(wx)} Y={fmt_float(wy)} Z={fmt_float(wz)}")
+
+    def _on_vision_gripper_request(self, action: str, dist: float, feed: float) -> None:
+        if action == "close":
+            cmd = f"M3 S{fmt_float(dist)} F{fmt_float(feed)}"
+            self._submit_command(cmd, source="manual", recordable=True)
+        elif action == "open":
+            cmd = f"M5 S{fmt_float(dist)} F{fmt_float(feed)}"
+            self._submit_command(cmd, source="manual", recordable=True)
+        elif action == "home":
+            cmd = f"M6 F{fmt_float(feed)}"
+            self._submit_command(cmd, source="manual", recordable=True)
+        elif action == "status":
+            self._submit_command("M3001", source="manual", recordable=False)
+
+    def _on_vision_place_request(
+        self,
+        wx: float,
+        wy: float,
+        wz: float,
+        feed: float,
+        grip_action: str,
+        grip_dist: float,
+        grip_feed: float,
+    ) -> None:
+        rx, ry, rz = self.transform.world_to_robot_position(wx, wy, wz)
+        commands = ["G90", build_cartesian_move(rx, ry, rz, feed)]
+
+        if grip_action == "open":
+            commands.append(f"M5 S{fmt_float(grip_dist)} F{fmt_float(grip_feed)}")
+        elif grip_action == "close":
+            commands.append(f"M3 S{fmt_float(grip_dist)} F{fmt_float(grip_feed)}")
+
+        self._submit_commands(commands, source="manual", recordable=True)
+        self._log(
+            f"Vision place queued: world X={fmt_float(wx)} Y={fmt_float(wy)} Z={fmt_float(wz)} grip={grip_action}"
+        )
 
     def _load_program(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
