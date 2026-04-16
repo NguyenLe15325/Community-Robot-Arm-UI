@@ -5,7 +5,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -42,6 +43,20 @@ from robot_arm_ui.models.program_model import ProgramModel
 from robot_arm_ui.ui.vision_widget import VisionWidget
 
 
+class TerminalCommandLineEdit(QLineEdit):
+    history_prev_requested = pyqtSignal()
+    history_next_requested = pyqtSignal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
+        if event.key() == Qt.Key.Key_Up:
+            self.history_prev_requested.emit()
+            return
+        if event.key() == Qt.Key.Key_Down:
+            self.history_next_requested.emit()
+            return
+        super().keyPressEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -54,6 +69,9 @@ class MainWindow(QMainWindow):
         self.transform = FrameTransform()
         self._queue_size = 0
         self._settings_path = self._default_external_settings_path()
+        self._terminal_history: list[str] = []
+        self._terminal_history_index = 0
+        self._terminal_draft = ""
 
         self._build_ui()
         self._connect_signals()
@@ -362,12 +380,14 @@ class MainWindow(QMainWindow):
         self.terminal_output.setMinimumHeight(420)
 
         command_row = QHBoxLayout()
-        self.terminal_input = QLineEdit()
+        self.terminal_input = TerminalCommandLineEdit()
         self.terminal_input.setPlaceholderText("Type G-code command (example: G1 X100 Y80 Z0 F40)")
         self.send_terminal_button = QPushButton("Send")
+        self.clear_terminal_button = QPushButton("Clear")
 
         command_row.addWidget(self.terminal_input, stretch=1)
         command_row.addWidget(self.send_terminal_button)
+        command_row.addWidget(self.clear_terminal_button)
 
         layout.addWidget(self.terminal_output, stretch=1)
         layout.addLayout(command_row)
@@ -436,6 +456,9 @@ class MainWindow(QMainWindow):
 
         self.send_terminal_button.clicked.connect(self._send_terminal_line)
         self.terminal_input.returnPressed.connect(self._send_terminal_line)
+        self.terminal_input.history_prev_requested.connect(self._terminal_history_prev)
+        self.terminal_input.history_next_requested.connect(self._terminal_history_next)
+        self.clear_terminal_button.clicked.connect(self.terminal_output.clear)
 
         self.program_load_button.clicked.connect(self._load_program)
         self.program_save_button.clicked.connect(self._save_program)
@@ -658,8 +681,37 @@ class MainWindow(QMainWindow):
         command = self.terminal_input.text().strip()
         if not command:
             return
+
+        if not self._terminal_history or self._terminal_history[-1] != command:
+            self._terminal_history.append(command)
+        self._terminal_history_index = len(self._terminal_history)
+        self._terminal_draft = ""
+
         self._submit_command(command, source="manual", recordable=True)
         self.terminal_input.clear()
+
+    def _terminal_history_prev(self) -> None:
+        if not self._terminal_history:
+            return
+
+        if self._terminal_history_index == len(self._terminal_history):
+            self._terminal_draft = self.terminal_input.text()
+
+        if self._terminal_history_index > 0:
+            self._terminal_history_index -= 1
+
+        self.terminal_input.setText(self._terminal_history[self._terminal_history_index])
+
+    def _terminal_history_next(self) -> None:
+        if not self._terminal_history:
+            return
+
+        if self._terminal_history_index < len(self._terminal_history) - 1:
+            self._terminal_history_index += 1
+            self.terminal_input.setText(self._terminal_history[self._terminal_history_index])
+        else:
+            self._terminal_history_index = len(self._terminal_history)
+            self.terminal_input.setText(self._terminal_draft)
 
     def _send_gripper(self, action: str) -> None:
         if action == "close":
