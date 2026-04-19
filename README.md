@@ -7,7 +7,7 @@ Desktop UI for the Community Robot Arm firmware.
 - Serial connection manager (port, baud, connect/disconnect)
 - ACK-driven command queue (`next command` sent only after `ok`)
 - Cartesian control in robot frame or world frame
-- Configurable world frame transform (`robot -> world`)
+- Configurable world frame transform (`world -> robot`)
 - Jog controls (`+/-X`, `+/-Y`, `+/-Z`)
 - Joint move controls (`T1/T2/T3`)
 - Integrated terminal log + manual command send
@@ -43,15 +43,28 @@ python main.py
 
 ## World Frame Transform
 
-The transform is defined as:
+The transform converts world coordinates to robot coordinates using a **translation-then-rotation** sequence:
 
-- world = R(robot) + t
-- `R = Rz(yaw) * Ry(pitch) * Rx(roll)`
+**Formula:** `p_robot = R(roll, pitch, yaw) × (p_world − t)`
 
-For world-frame command input:
+**Conversion steps:**
+1. Subtract translation: `(p_world - t) = (p_world - tx, p_world - ty, p_world - tz)`
+2. Apply rotation matrix: `R = Rz(yaw) × Ry(pitch) × Rx(roll)`
+   - Matrix is built in ZYX order
+   - When applied to points, effective rotation sequence is X → Y → Z (roll → pitch → yaw)
+3. Result is robot coordinates sent to robot arm
 
-- absolute move: world position -> robot position via inverse transform
-- relative/jog move: world delta -> robot delta via inverse rotation (no translation)
+**Parameters to calibrate:**
+- `tx, ty, tz`: Position of robot origin in world coordinates (mm)
+- `roll, pitch, yaw`: Angles that map world axes to robot axes (degrees)
+
+**Examples:**
+- If robot origin is at world (100, 254, 105), set `tx=100, ty=254, tz=105`
+- If world frame is rotated 45° about Z relative to robot, set `yaw=-45`
+
+For world-frame command input in the UI:
+- **Absolute move**: world position → applies full transform → robot position
+- **Relative/jog move**: world delta → applies rotation only (no translation)
 
 ## Program Files
 

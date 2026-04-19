@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -198,18 +199,41 @@ class MainWindow(QMainWindow):
         return group
 
     def _build_frame_group(self) -> QGroupBox:
-        group = QGroupBox("World Frame Transform (robot -> world)")
-        form = QFormLayout(group)
+        group = QGroupBox("World Frame Transform (world -> robot)")
+        layout = QVBoxLayout(group)
         group.setMinimumWidth(520)
 
+        # Formula display
+        formula_label = QLabel()
+        formula_label.setText(
+            "<b>What this UI does:</b><br/>"
+            "p<sub>robot</sub> = R × (p<sub>world</sub> − t)<br/>"
+            "<b>Step 1:</b> subtract translation t = (tx, ty, tz) from the world point<br/>"
+            "<b>Step 2:</b> rotate the shifted point using R = Rz(yaw) × Ry(pitch) × Rx(roll)<br/>"
+            "<b>Step 3:</b> send the result to the robot<br/><br/>"
+            "<b>Your intended mapping:</b><br/>"
+            "world origin = (100, 254, 105) mm → robot origin<br/>"
+            "world +X → robot −Z<br/>"
+            "world +Y → robot −X<br/>"
+            "world +Z → robot +Y<br/><br/>"
+            "<b>Use these values:</b> Tx=100, Ty=254, Tz=105, Roll=0, Pitch=90, Yaw=90"
+        )
+        formula_label.setWordWrap(True)
+        layout.addWidget(formula_label)
+
+        # Divider
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(divider)
+
+        # Parameters form
+        form = QFormLayout()
         self.tx_spin = self._float_spin(-1000.0, 1000.0, 0.0)
         self.ty_spin = self._float_spin(-1000.0, 1000.0, 0.0)
         self.tz_spin = self._float_spin(-1000.0, 1000.0, 0.0)
-        self.roll_spin = self._float_spin(-180.0, 180.0, 90.0)
-        self.pitch_spin = self._float_spin(-180.0, 180.0, 180.0)
-        self.yaw_spin = self._float_spin(-180.0, 180.0, -90.0)
-
-        self.apply_frame_button = QPushButton("Apply Transform")
+        self.roll_spin = self._float_spin(-180.0, 180.0, 0.0)
+        self.pitch_spin = self._float_spin(-180.0, 180.0, 0.0)
+        self.yaw_spin = self._float_spin(-180.0, 180.0, 0.0)
 
         form.addRow("Tx (mm)", self.tx_spin)
         form.addRow("Ty (mm)", self.ty_spin)
@@ -217,7 +241,18 @@ class MainWindow(QMainWindow):
         form.addRow("Roll (deg)", self.roll_spin)
         form.addRow("Pitch (deg)", self.pitch_spin)
         form.addRow("Yaw (deg)", self.yaw_spin)
-        form.addRow(self.apply_frame_button)
+        layout.addLayout(form)
+
+        # Help text
+        matrix_label = QLabel(
+            "<b>Important:</b> the matrix is built as ZYX, but the effect on a point is: rotate X first, then Y, then Z.<br/>"
+            "If your axis mapping is not what you expect, the sign of one or more angles may need to be flipped."
+        )
+        matrix_label.setWordWrap(True)
+        layout.addWidget(matrix_label)
+
+        self.apply_frame_button = QPushButton("Apply Transform")
+        layout.addWidget(self.apply_frame_button)
 
         return group
 
@@ -522,7 +557,7 @@ class MainWindow(QMainWindow):
             pitch_deg=self.pitch_spin.value(),
             yaw_deg=self.yaw_spin.value(),
         )
-        self._log("World transform updated")
+        self._log("World->robot transform updated")
 
     def _save_app_settings(self, silent: bool, target_path: Path | None = None) -> None:
         try:
