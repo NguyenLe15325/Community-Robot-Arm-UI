@@ -302,10 +302,11 @@ class VisionWidget(QWidget):
         self.target_z_spin = self._float_spin(0.0)
         self.feed_spin = self._float_spin(30.0)
 
-        self.move_target_button = QPushButton("Move To XY")
+        self.move_target_button = QPushButton("Move To XYZ")
         self.move_target_button.setStyleSheet("background: #2b72d6; color: #ffffff;")
 
-        self.jog_xy_step_spin = self._float_spin(5.0)
+        self.jog_x_step_spin = self._float_spin(5.0)
+        self.jog_y_step_spin = self._float_spin(5.0)
         self.jog_z_step_spin = self._float_spin(5.0)
 
         self.jog_x_minus = QPushButton("X-")
@@ -326,17 +327,20 @@ class VisionWidget(QWidget):
         layout.addWidget(self.feed_spin, 1, 1)
         layout.addWidget(self.move_target_button, 1, 2)
 
-        layout.addWidget(QLabel("Jog XY step"), 2, 0)
-        layout.addWidget(self.jog_xy_step_spin, 2, 1)
+        layout.addWidget(QLabel("Jog X step"), 2, 0)
+        layout.addWidget(self.jog_x_step_spin, 2, 1)
         layout.addWidget(self.jog_x_minus, 2, 2)
         layout.addWidget(self.jog_x_plus, 2, 3)
-        layout.addWidget(self.jog_y_minus, 2, 4)
-        layout.addWidget(self.jog_y_plus, 2, 5)
 
-        layout.addWidget(QLabel("Jog Z step"), 3, 0)
-        layout.addWidget(self.jog_z_step_spin, 3, 1)
-        layout.addWidget(self.jog_z_minus, 3, 2)
-        layout.addWidget(self.jog_z_plus, 3, 3)
+        layout.addWidget(QLabel("Jog Y step"), 3, 0)
+        layout.addWidget(self.jog_y_step_spin, 3, 1)
+        layout.addWidget(self.jog_y_minus, 3, 2)
+        layout.addWidget(self.jog_y_plus, 3, 3)
+
+        layout.addWidget(QLabel("Jog Z step"), 4, 0)
+        layout.addWidget(self.jog_z_step_spin, 4, 1)
+        layout.addWidget(self.jog_z_minus, 4, 2)
+        layout.addWidget(self.jog_z_plus, 4, 3)
 
         return group
 
@@ -351,8 +355,10 @@ class VisionWidget(QWidget):
 
         self.gripper_open_button = QPushButton("Open Gripper")
         self.gripper_close_button = QPushButton("Close Gripper")
+        self.gripper_home_button = QPushButton("Home Gripper (M6)")
         self.gripper_open_button.setStyleSheet("background: #2d8f5a; color: #ffffff;")
         self.gripper_close_button.setStyleSheet("background: #b34a4a; color: #ffffff;")
+        self.gripper_home_button.setStyleSheet("background: #4263eb; color: #ffffff;")
 
         layout.addWidget(QLabel("Close (mm)"))
         layout.addWidget(self.gripper_close_dist_spin)
@@ -362,6 +368,7 @@ class VisionWidget(QWidget):
         layout.addWidget(self.gripper_feed_spin)
         layout.addWidget(self.gripper_open_button)
         layout.addWidget(self.gripper_close_button)
+        layout.addWidget(self.gripper_home_button)
         return group
 
     def _build_places_group(self) -> QGroupBox:
@@ -373,8 +380,6 @@ class VisionWidget(QWidget):
         self.place_x_spin = self._float_spin(350.0)
         self.place_y_spin = self._float_spin(0.0)
         self.place_z_spin = self._float_spin(20.0)
-        self.place_grip_combo = QComboBox()
-        self.place_grip_combo.addItems(["None", "Open", "Close"])
 
         top.addWidget(QLabel("Name"), 0, 0)
         top.addWidget(self.place_name_input, 0, 1)
@@ -384,8 +389,6 @@ class VisionWidget(QWidget):
         top.addWidget(self.place_y_spin, 0, 5)
         top.addWidget(QLabel("Z"), 0, 6)
         top.addWidget(self.place_z_spin, 0, 7)
-        top.addWidget(QLabel("Grip"), 0, 8)
-        top.addWidget(self.place_grip_combo, 0, 9)
 
         btn_row = QHBoxLayout()
         self.place_add_button = QPushButton("Add")
@@ -410,8 +413,8 @@ class VisionWidget(QWidget):
         ):
             btn_row.addWidget(b)
 
-        self.place_table = QTableWidget(0, 5)
-        self.place_table.setHorizontalHeaderLabels(["Name", "X", "Y", "Z", "Grip"])
+        self.place_table = QTableWidget(0, 4)
+        self.place_table.setHorizontalHeaderLabels(["Name", "X", "Y", "Z"])
         self.place_table.verticalHeader().setVisible(False)
         self.place_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.place_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -435,10 +438,10 @@ class VisionWidget(QWidget):
         self.use_cursor_button.clicked.connect(self._use_cursor_xy)
         self.move_target_button.clicked.connect(self._move_target)
 
-        self.jog_x_minus.clicked.connect(lambda: self._jog_target(-self.jog_xy_step_spin.value(), 0.0, 0.0))
-        self.jog_x_plus.clicked.connect(lambda: self._jog_target(self.jog_xy_step_spin.value(), 0.0, 0.0))
-        self.jog_y_minus.clicked.connect(lambda: self._jog_target(0.0, -self.jog_xy_step_spin.value(), 0.0))
-        self.jog_y_plus.clicked.connect(lambda: self._jog_target(0.0, self.jog_xy_step_spin.value(), 0.0))
+        self.jog_x_minus.clicked.connect(lambda: self._jog_target(-self.jog_x_step_spin.value(), 0.0, 0.0))
+        self.jog_x_plus.clicked.connect(lambda: self._jog_target(self.jog_x_step_spin.value(), 0.0, 0.0))
+        self.jog_y_minus.clicked.connect(lambda: self._jog_target(0.0, -self.jog_y_step_spin.value(), 0.0))
+        self.jog_y_plus.clicked.connect(lambda: self._jog_target(0.0, self.jog_y_step_spin.value(), 0.0))
         self.jog_z_minus.clicked.connect(lambda: self._jog_target(0.0, 0.0, -self.jog_z_step_spin.value()))
         self.jog_z_plus.clicked.connect(lambda: self._jog_target(0.0, 0.0, self.jog_z_step_spin.value()))
 
@@ -453,6 +456,13 @@ class VisionWidget(QWidget):
             lambda: self.gripper_request.emit(
                 "close",
                 float(self.gripper_close_dist_spin.value()),
+                float(self.gripper_feed_spin.value()),
+            )
+        )
+        self.gripper_home_button.clicked.connect(
+            lambda: self.gripper_request.emit(
+                "home",
+                0.0,
                 float(self.gripper_feed_spin.value()),
             )
         )
@@ -735,22 +745,19 @@ class VisionWidget(QWidget):
             return None
         return int(selected[0].row())
 
-    def _set_place_row(self, row: int, name: str, x: float, y: float, z: float, grip: str) -> None:
+    def _set_place_row(self, row: int, name: str, x: float, y: float, z: float) -> None:
         self.place_table.setItem(row, 0, QTableWidgetItem(name))
         self.place_table.setItem(row, 1, QTableWidgetItem(f"{x:.3f}"))
         self.place_table.setItem(row, 2, QTableWidgetItem(f"{y:.3f}"))
         self.place_table.setItem(row, 3, QTableWidgetItem(f"{z:.3f}"))
-        self.place_table.setItem(row, 4, QTableWidgetItem(grip))
 
-    def _row_values(self, row: int) -> Optional[tuple[str, float, float, float, str]]:
+    def _row_values(self, row: int) -> Optional[tuple[str, float, float, float]]:
         try:
             name = self.place_table.item(row, 0).text()
             x = float(self.place_table.item(row, 1).text())
             y = float(self.place_table.item(row, 2).text())
             z = float(self.place_table.item(row, 3).text())
-            grip_item = self.place_table.item(row, 4)
-            grip = grip_item.text() if grip_item is not None else "None"
-            return name, x, y, z, grip
+            return name, x, y, z
         except Exception:
             return None
 
@@ -763,7 +770,6 @@ class VisionWidget(QWidget):
             self.place_x_spin.value(),
             self.place_y_spin.value(),
             self.place_z_spin.value(),
-            self.place_grip_combo.currentText(),
         )
 
     def _update_place_row(self) -> None:
@@ -777,7 +783,6 @@ class VisionWidget(QWidget):
             self.place_x_spin.value(),
             self.place_y_spin.value(),
             self.place_z_spin.value(),
-            self.place_grip_combo.currentText(),
         )
 
     def _remove_place_row(self) -> None:
@@ -795,12 +800,11 @@ class VisionWidget(QWidget):
         values = self._row_values(row)
         if values is None:
             return
-        name, x, y, z, grip = values
+        name, x, y, z = values
         self.place_name_input.setText(name)
         self.place_x_spin.setValue(x)
         self.place_y_spin.setValue(y)
         self.place_z_spin.setValue(z)
-        self.place_grip_combo.setCurrentText(grip)
         self.target_x_spin.setValue(x)
         self.target_y_spin.setValue(y)
         self.target_z_spin.setValue(z)
@@ -813,7 +817,7 @@ class VisionWidget(QWidget):
         values = self._row_values(row)
         if values is None:
             return
-        _, x, y, z, _ = values
+        _, x, y, z = values
         self.move_request_world_xy.emit(x, y, z, float(self.feed_spin.value()))
 
     def _place_selected_sequence(self) -> None:
@@ -825,24 +829,16 @@ class VisionWidget(QWidget):
         if values is None:
             return
 
-        _, x, y, z, grip = values
-        grip_action = grip.lower()
-        if grip_action == "open":
-            grip_dist = float(self.gripper_open_dist_spin.value())
-        elif grip_action == "close":
-            grip_dist = float(self.gripper_close_dist_spin.value())
-        else:
-            grip_dist = 0.0
-        grip_feed = float(self.gripper_feed_spin.value())
+        _, x, y, z = values
 
         self.place_request_world.emit(
             float(x),
             float(y),
             float(z),
             float(self.feed_spin.value()),
-            grip_action,
-            grip_dist,
-            grip_feed,
+            "none",
+            0.0,
+            float(self.gripper_feed_spin.value()),
         )
 
     def _save_places_file(self) -> None:
@@ -860,8 +856,8 @@ class VisionWidget(QWidget):
             values = self._row_values(row)
             if values is None:
                 continue
-            name, x, y, z, grip = values
-            places.append({"name": name, "x": x, "y": y, "z": z, "grip": grip})
+            name, x, y, z = values
+            places.append({"name": name, "x": x, "y": y, "z": z})
 
         try:
             Path(path_str).write_text(json.dumps({"places": places}, indent=2), encoding="utf-8")
@@ -891,7 +887,6 @@ class VisionWidget(QWidget):
                     float(place.get("x", 0.0)),
                     float(place.get("y", 0.0)),
                     float(place.get("z", 0.0)),
-                    str(place.get("grip", "None")),
                 )
             self.status_label.setText(f"Loaded places: {path_str}")
         except Exception as exc:
@@ -903,8 +898,8 @@ class VisionWidget(QWidget):
             values = self._row_values(row)
             if values is None:
                 continue
-            name, x, y, z, grip = values
-            places.append({"name": name, "x": x, "y": y, "z": z, "grip": grip})
+            name, x, y, z = values
+            places.append({"name": name, "x": x, "y": y, "z": z})
 
         return {
             "camera_index": self.camera_index_spin.value(),
@@ -936,7 +931,8 @@ class VisionWidget(QWidget):
             "gripper_open_dist": self.gripper_open_dist_spin.value(),
             "gripper_close_dist": self.gripper_close_dist_spin.value(),
             "gripper_feed": self.gripper_feed_spin.value(),
-            "jog_xy_step": self.jog_xy_step_spin.value(),
+            "jog_x_step": self.jog_x_step_spin.value(),
+            "jog_y_step": self.jog_y_step_spin.value(),
             "jog_z_step": self.jog_z_step_spin.value(),
             "places": places,
         }
@@ -976,7 +972,8 @@ class VisionWidget(QWidget):
         self.gripper_open_dist_spin.setValue(float(settings.get("gripper_open_dist", self.gripper_open_dist_spin.value())))
         self.gripper_close_dist_spin.setValue(float(settings.get("gripper_close_dist", self.gripper_close_dist_spin.value())))
         self.gripper_feed_spin.setValue(float(settings.get("gripper_feed", self.gripper_feed_spin.value())))
-        self.jog_xy_step_spin.setValue(float(settings.get("jog_xy_step", self.jog_xy_step_spin.value())))
+        self.jog_x_step_spin.setValue(float(settings.get("jog_x_step", settings.get("jog_xy_step", self.jog_x_step_spin.value()))))
+        self.jog_y_step_spin.setValue(float(settings.get("jog_y_step", settings.get("jog_xy_step", self.jog_y_step_spin.value()))))
         self.jog_z_step_spin.setValue(float(settings.get("jog_z_step", self.jog_z_step_spin.value())))
 
         self.place_table.setRowCount(0)
@@ -989,5 +986,4 @@ class VisionWidget(QWidget):
                 float(place.get("x", 0.0)),
                 float(place.get("y", 0.0)),
                 float(place.get("z", 0.0)),
-                str(place.get("grip", "None")),
             )
