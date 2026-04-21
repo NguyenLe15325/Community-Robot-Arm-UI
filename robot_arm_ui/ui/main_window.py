@@ -109,6 +109,8 @@ class MainWindow(QMainWindow):
         self.vision_widget.move_request_world_xy.connect(self._on_vision_move_request)
         self.vision_widget.gripper_request.connect(self._on_vision_gripper_request)
         self.vision_widget.place_request_world.connect(self._on_vision_place_request)
+        self.vision_widget.pick_and_place_request.connect(self._on_pick_and_place_request)
+        self.vision_widget.pnp_stop_button.clicked.connect(self._pnp_stop)
         self.vision_widget.save_settings_requested.connect(self._save_app_settings_as)
         self.vision_widget.load_settings_requested.connect(self._load_app_settings_from)
         return self.vision_widget
@@ -795,6 +797,66 @@ class MainWindow(QMainWindow):
             f"Vision place queued: world X={fmt_float(wx)} Y={fmt_float(wy)} Z={fmt_float(wz)} grip={grip_action}"
         )
 
+    def _on_pick_and_place_request(self, gcode_lines: list) -> None:
+        """Convert world-coordinate G-code to robot coordinates and enqueue.
+
+        Lines starting with G0 or G1 that contain X/Y/Z parameters are
+        treated as world-coordinate moves: the XYZ values are converted
+        through the vision transform before dispatch.  All other lines
+        (M3, M5, G4, G90, etc.) are passed through unchanged.
+
+        The firmware now sends 'ok' only after motion completes, so no
+        M400 workaround is needed.
+        """
+        import re
+        commands: list[str] = []
+
+        for line in gcode_lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            # Check if this is a G0/G1 move with world-coordinate XYZ
+            m = re.match(r'^G[01]\b', stripped, re.IGNORECASE)
+            if m:
+                # Extract X, Y, Z, F parameters
+                x_m = re.search(r'X([+-]?\d*\.?\d+)', stripped, re.IGNORECASE)
+                y_m = re.search(r'Y([+-]?\d*\.?\d+)', stripped, re.IGNORECASE)
+                z_m = re.search(r'Z([+-]?\d*\.?\d+)', stripped, re.IGNORECASE)
+                f_m = re.search(r'F([+-]?\d*\.?\d+)', stripped, re.IGNORECASE)
+
+                if x_m or y_m or z_m:
+                    wx = float(x_m.group(1)) if x_m else 0.0
+                    wy = float(y_m.group(1)) if y_m else 0.0
+                    wz = float(z_m.group(1)) if z_m else 0.0
+                    feed = float(f_m.group(1)) if f_m else 30.0
+
+                    rx, ry, rz = self.transform.world_to_robot_position(wx, wy, wz)
+                    commands.append(build_cartesian_move(rx, ry, rz, feed))
+                    continue
+
+            # Pass through unchanged (M3, M5, G4, G90, etc.)
+            commands.append(stripped)
+
+        if not commands:
+            self._log("Pick & Place: nothing to execute")
+            return
+
+        # Update UI state
+        self.vision_widget.pnp_execute_button.setEnabled(False)
+        self.vision_widget.pnp_stop_button.setEnabled(True)
+
+        self._submit_commands(commands, source="pnp", recordable=True)
+        self._log(f"Pick & Place: {len(commands)} command(s) queued")
+
+    def _pnp_stop(self) -> None:
+        """Cancel the running PnP sequence."""
+        self.executor.clear_pending()
+        self._log("Pick & Place: stopped")
+        self.vision_widget.pnp_execute_button.setEnabled(True)
+        self.vision_widget.pnp_stop_button.setEnabled(False)
+        self.vision_widget.status_label.setText("Pick & Place: stopped")
+
     def _load_program(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -873,6 +935,14 @@ class MainWindow(QMainWindow):
         self._queue_size = size
         state = "waiting ack" if self.executor.waiting_ack else "idle"
         self.queue_label.setText(f"Queue: {size} ({state})")
+
+        # Re-enable PnP execute button when the queue fully drains
+        if size == 0 and not self.executor.waiting_ack:
+            if hasattr(self, "vision_widget"):
+                if not self.vision_widget.pnp_execute_button.isEnabled():
+                    self.vision_widget.pnp_execute_button.setEnabled(True)
+                    self.vision_widget.pnp_stop_button.setEnabled(False)
+                    self.vision_widget.status_label.setText("Pick & Place: sequence complete")
 
     def _on_command_dispatched(self, command: str, source: str) -> None:
         self._log(f"TX [{source}]: {command}")

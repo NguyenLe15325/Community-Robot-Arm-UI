@@ -15,10 +15,13 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -52,11 +55,15 @@ class ImageLabel(QLabel):
         super().mousePressEvent(event)
 
 
+
+
 class VisionWidget(QWidget):
     move_request_world_xy = pyqtSignal(float, float, float, float)
     gripper_request = pyqtSignal(str, float, float)
     # Kept for compatibility with existing main-window wiring.
     place_request_world = pyqtSignal(float, float, float, float, str, float, float)
+    # Emits a list of dicts describing each step for the main window to convert & enqueue.
+    pick_and_place_request = pyqtSignal(list)  # emits list[str] of G-code lines
     save_settings_requested = pyqtSignal()
     load_settings_requested = pyqtSignal()
 
@@ -115,6 +122,7 @@ class VisionWidget(QWidget):
         content_layout.addWidget(self._build_move_group())
         content_layout.addWidget(self._build_gripper_group())
         content_layout.addWidget(self._build_places_group())
+        content_layout.addWidget(self._build_pick_and_place_group())
         content_layout.addStretch(1)
 
         root.addWidget(self._wrap_scroll(content))
@@ -475,6 +483,14 @@ class VisionWidget(QWidget):
         self.place_place_button.clicked.connect(self._place_selected_sequence)
         self.place_save_button.clicked.connect(self._save_places_file)
         self.place_load_file_button.clicked.connect(self._load_places_file)
+
+        # Pick & Place sequence
+        self.pnp_use_cursor_button.clicked.connect(self._pnp_use_cursor_xy)
+        self.pnp_generate_button.clicked.connect(self._pnp_generate_default)
+        self.pnp_execute_button.clicked.connect(self._pnp_execute)
+        self.place_table.model().rowsInserted.connect(self._pnp_sync_place_combo)
+        self.place_table.model().rowsRemoved.connect(self._pnp_sync_place_combo)
+        self.place_table.model().dataChanged.connect(self._pnp_sync_place_combo)
 
     def _set_advanced_settings_visible(self, visible: bool) -> None:
         for widget in self._advanced_widgets:
@@ -891,6 +907,246 @@ class VisionWidget(QWidget):
             self.status_label.setText(f"Loaded places: {path_str}")
         except Exception as exc:
             self.status_label.setText(f"Load places failed: {exc}")
+        self._pnp_sync_place_combo()
+
+    # ------------------------------------------------------------------
+    # Pick & Place – UI builder
+    # ------------------------------------------------------------------
+
+    def _build_pick_and_place_group(self) -> QGroupBox:
+        group = QGroupBox("5) Pick & Place Sequence (G-code, world coords)")
+        layout = QVBoxLayout(group)
+
+        # --- Input parameters (used by "Generate Default") ---
+        params = QGridLayout()
+
+        self.pnp_pick_x_spin = self._float_spin(0.0)
+        self.pnp_pick_y_spin = self._float_spin(0.0)
+        self.pnp_pick_z_spin = self._float_spin(0.0)
+        self.pnp_approach_z_spin = self._float_spin(50.0)
+        self.pnp_move_feed_spin = self._float_spin(30.0)
+
+        self.pnp_use_cursor_button = QPushButton("Use Cursor XY for Pick")
+        self.pnp_use_cursor_button.setStyleSheet("background: #2d8f5a; color: #ffffff;")
+
+        self.pnp_place_combo = QComboBox()
+        self.pnp_place_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        params.addWidget(QLabel("Pick X"), 0, 0)
+        params.addWidget(self.pnp_pick_x_spin, 0, 1)
+        params.addWidget(QLabel("Pick Y"), 0, 2)
+        params.addWidget(self.pnp_pick_y_spin, 0, 3)
+        params.addWidget(QLabel("Pick Z"), 0, 4)
+        params.addWidget(self.pnp_pick_z_spin, 0, 5)
+        params.addWidget(self.pnp_use_cursor_button, 0, 6)
+
+        params.addWidget(QLabel("Approach Z"), 1, 0)
+        params.addWidget(self.pnp_approach_z_spin, 1, 1)
+        params.addWidget(QLabel("Move Feed"), 1, 2)
+        params.addWidget(self.pnp_move_feed_spin, 1, 3)
+        params.addWidget(QLabel("Place"), 1, 4)
+        params.addWidget(self.pnp_place_combo, 1, 5, 1, 2)
+
+        layout.addLayout(params)
+
+        # --- G-code sequence editor ---
+        self.pnp_gcode_edit = QPlainTextEdit()
+        self.pnp_gcode_edit.setPlaceholderText(
+            "G-code template (world coordinates).\n"
+            "Lines starting with ; are comments.\n\n"
+            "Available variables (resolved at execution time):\n"
+            "  {PICK_X} {PICK_Y} {PICK_Z}     — from Pick fields above\n"
+            "  {PLACE_X} {PLACE_Y} {PLACE_Z}   — from selected Place\n"
+            "  {APPROACH_Z}                     — from Approach Z field\n"
+            "  {FEED}                           — from Move Feed field\n"
+            "  {GRIP_CLOSE} {GRIP_OPEN}         — from Gripper dist fields\n"
+            "  {GRIP_FEED}                      — from Gripper feed field\n\n"
+            "Example:\n"
+            "  G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{FEED}\n"
+            "  M3 S{GRIP_CLOSE} F{GRIP_FEED}"
+        )
+        self.pnp_gcode_edit.setMinimumHeight(300)
+        font = self.pnp_gcode_edit.font()
+        font.setFamily("Consolas")
+        font.setPointSize(10)
+        self.pnp_gcode_edit.setFont(font)
+        layout.addWidget(self.pnp_gcode_edit)
+
+        # --- Buttons ---
+        btn_row = QHBoxLayout()
+        self.pnp_generate_button = QPushButton("Generate Default")
+        btn_row.addWidget(self.pnp_generate_button)
+        layout.addLayout(btn_row)
+
+        exec_row = QHBoxLayout()
+        self.pnp_execute_button = QPushButton("▶  Execute Pick & Place")
+        self.pnp_execute_button.setStyleSheet(
+            "background: #b35c00; color: #ffffff; font-weight: bold; padding: 10px 18px;"
+        )
+        self.pnp_stop_button = QPushButton("⏹  Stop")
+        self.pnp_stop_button.setStyleSheet(
+            "background: #b34a4a; color: #ffffff; font-weight: bold; padding: 10px 18px;"
+        )
+        self.pnp_stop_button.setEnabled(False)
+        exec_row.addWidget(self.pnp_execute_button)
+        exec_row.addWidget(self.pnp_stop_button)
+        layout.addLayout(exec_row)
+
+        # Populate default sequence on first build
+        self._pnp_generate_default()
+
+        return group
+
+    # ------------------------------------------------------------------
+    # Pick & Place – helpers
+    # ------------------------------------------------------------------
+
+    def _pnp_use_cursor_xy(self) -> None:
+        if self._cursor_world is None:
+            self.status_label.setText("Click ROI to capture cursor XY first")
+            return
+        self.pnp_pick_x_spin.setValue(self._cursor_world[0])
+        self.pnp_pick_y_spin.setValue(self._cursor_world[1])
+        self.status_label.setText(
+            f"Pick XY set from cursor: {self._cursor_world[0]:.2f}, {self._cursor_world[1]:.2f}"
+        )
+
+    def _pnp_sync_place_combo(self) -> None:
+        """Re-populate the place combo from the place table."""
+        current = self.pnp_place_combo.currentText()
+        self.pnp_place_combo.blockSignals(True)
+        self.pnp_place_combo.clear()
+        for row in range(self.place_table.rowCount()):
+            vals = self._row_values(row)
+            if vals:
+                name, x, y, z = vals
+                self.pnp_place_combo.addItem(
+                    f"{name}  ({x:.1f}, {y:.1f}, {z:.1f})", row
+                )
+        if current:
+            idx = self.pnp_place_combo.findText(current)
+            if idx >= 0:
+                self.pnp_place_combo.setCurrentIndex(idx)
+        self.pnp_place_combo.blockSignals(False)
+
+    def _pnp_selected_place(self) -> Optional[tuple[str, float, float, float]]:
+        """Return (name, x, y, z) of the currently selected place, or None."""
+        idx = self.pnp_place_combo.currentIndex()
+        if idx < 0:
+            return None
+        row = self.pnp_place_combo.itemData(idx)
+        if row is None or row >= self.place_table.rowCount():
+            return None
+        return self._row_values(row)
+
+    def _pnp_build_variables(self) -> dict[str, str]:
+        """Build the variable dictionary from current UI state.
+
+        Returns a dict mapping variable names (without braces) to their
+        string values.  Used both for template resolution and for
+        documenting available variables.
+        """
+        place = self._pnp_selected_place()
+        plx, ply, plz = (place[1], place[2], place[3]) if place else (0.0, 0.0, 0.0)
+
+        def g(v: float) -> str:
+            return f"{v:g}"
+
+        return {
+            "PICK_X": g(self.pnp_pick_x_spin.value()),
+            "PICK_Y": g(self.pnp_pick_y_spin.value()),
+            "PICK_Z": g(self.pnp_pick_z_spin.value()),
+            "PLACE_X": g(plx),
+            "PLACE_Y": g(ply),
+            "PLACE_Z": g(plz),
+            "APPROACH_Z": g(self.pnp_approach_z_spin.value()),
+            "FEED": g(self.pnp_move_feed_spin.value()),
+            "GRIP_CLOSE": g(self.gripper_close_dist_spin.value()),
+            "GRIP_OPEN": g(self.gripper_open_dist_spin.value()),
+            "GRIP_FEED": g(self.gripper_feed_spin.value()),
+        }
+
+    def _pnp_generate_default(self) -> None:
+        """Generate the default pick-and-place G-code template with variables."""
+        lines = [
+            "G90                                             ; absolute mode",
+            "G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{FEED}   ; approach above pick",
+            "G1 X{PICK_X} Y{PICK_Y} Z{PICK_Z} F{FEED}       ; descend to pick",
+            "M3 S{GRIP_CLOSE} F{GRIP_FEED}                   ; gripper close",
+            "G4 P300                                         ; wait for grip",
+            "G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{FEED}   ; retract up from pick",
+            "G1 X{PLACE_X} Y{PLACE_Y} Z{APPROACH_Z} F{FEED} ; approach above place",
+            "G1 X{PLACE_X} Y{PLACE_Y} Z{PLACE_Z} F{FEED}    ; descend to place",
+            "M5 S{GRIP_OPEN} F{GRIP_FEED}                    ; gripper open",
+            "G4 P300                                         ; wait for release",
+            "G1 X{PLACE_X} Y{PLACE_Y} Z{APPROACH_Z} F{FEED} ; retract up from place",
+        ]
+
+        self.pnp_gcode_edit.setPlainText("\n".join(lines))
+        self.status_label.setText("Pick & Place: default template generated")
+
+    def _pnp_execute(self) -> None:
+        """Resolve variables, strip comments, and emit G-code for execution."""
+        text = self.pnp_gcode_edit.toPlainText().strip()
+        if not text:
+            self.status_label.setText("Pick & Place: no G-code to execute")
+            return
+
+        # Build variable map from current UI state
+        variables = self._pnp_build_variables()
+
+        lines: list[str] = []
+        for raw_line in text.splitlines():
+            # Strip comments (everything after ;)
+            cmd = raw_line.split(";")[0].strip()
+            if not cmd:
+                continue
+
+            # Resolve {VAR} placeholders
+            try:
+                resolved = cmd.format_map(variables)
+            except (KeyError, ValueError) as exc:
+                self.status_label.setText(f"Pick & Place: variable error: {exc}")
+                return
+
+            lines.append(resolved)
+
+        if not lines:
+            self.status_label.setText("Pick & Place: no executable lines")
+            return
+
+        self.pick_and_place_request.emit(lines)
+        self.status_label.setText(f"Pick & Place: {len(lines)} command(s) queued")
+
+    # ------------------------------------------------------------------
+    # Pick & Place – settings persistence
+    # ------------------------------------------------------------------
+
+    def _pnp_get_config(self) -> dict[str, Any]:
+        return {
+            "pick_x": self.pnp_pick_x_spin.value(),
+            "pick_y": self.pnp_pick_y_spin.value(),
+            "pick_z": self.pnp_pick_z_spin.value(),
+            "approach_z": self.pnp_approach_z_spin.value(),
+            "move_feed": self.pnp_move_feed_spin.value(),
+            "place_index": self.pnp_place_combo.currentIndex(),
+            "gcode": self.pnp_gcode_edit.toPlainText(),
+        }
+
+    def _pnp_apply_config(self, cfg: dict[str, Any]) -> None:
+        self.pnp_pick_x_spin.setValue(float(cfg.get("pick_x", 0.0)))
+        self.pnp_pick_y_spin.setValue(float(cfg.get("pick_y", 0.0)))
+        self.pnp_pick_z_spin.setValue(float(cfg.get("pick_z", 0.0)))
+        self.pnp_approach_z_spin.setValue(float(cfg.get("approach_z", 50.0)))
+        self.pnp_move_feed_spin.setValue(float(cfg.get("move_feed", 30.0)))
+
+        gcode = cfg.get("gcode", "")
+        if gcode:
+            self.pnp_gcode_edit.setPlainText(gcode)
+
+        idx = int(cfg.get("place_index", 0))
+        if 0 <= idx < self.pnp_place_combo.count():
+            self.pnp_place_combo.setCurrentIndex(idx)
 
     def get_settings(self) -> dict[str, Any]:
         places: list[dict[str, Any]] = []
@@ -935,6 +1191,7 @@ class VisionWidget(QWidget):
             "jog_y_step": self.jog_y_step_spin.value(),
             "jog_z_step": self.jog_z_step_spin.value(),
             "places": places,
+            "pnp": self._pnp_get_config(),
         }
 
     def apply_settings(self, settings: dict[str, Any]) -> None:
@@ -987,3 +1244,8 @@ class VisionWidget(QWidget):
                 float(place.get("y", 0.0)),
                 float(place.get("z", 0.0)),
             )
+
+        pnp = settings.get("pnp", {})
+        if pnp:
+            self._pnp_apply_config(pnp)
+        self._pnp_sync_place_combo()
