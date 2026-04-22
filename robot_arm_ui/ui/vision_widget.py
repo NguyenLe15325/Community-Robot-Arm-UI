@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
+from robot_arm_ui.core.candy_detector import CandyDetector, Detection
+
 from PyQt6.QtCore import QPoint, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtWidgets import (
@@ -64,6 +66,7 @@ class VisionWidget(QWidget):
     place_request_world = pyqtSignal(float, float, float, float, str, float, float)
     # Emits a list of dicts describing each step for the main window to convert & enqueue.
     pick_and_place_request = pyqtSignal(list)  # emits list[str] of G-code lines
+    auto_pick_all_request = pyqtSignal(list)    # emits list of (class_name, world_x, world_y) tuples
     save_settings_requested = pyqtSignal()
     load_settings_requested = pyqtSignal()
 
@@ -80,6 +83,10 @@ class VisionWidget(QWidget):
         self._cursor_world: tuple[float, float] | None = None
         self._last_marker_centers: dict[int, Any] = {}
         self._last_marker_corners: dict[int, Any] = {}
+
+        # YOLO detection state
+        self._detector = CandyDetector()
+        self._detections: list[tuple[str, float, float, float]] = []  # (class, wx, wy, conf)
 
         self._build_ui()
         self._connect_signals()
@@ -123,6 +130,7 @@ class VisionWidget(QWidget):
         content_layout.addWidget(self._build_gripper_group())
         content_layout.addWidget(self._build_places_group())
         content_layout.addWidget(self._build_pick_and_place_group())
+        content_layout.addWidget(self._build_detection_group())
         content_layout.addStretch(1)
 
         root.addWidget(self._wrap_scroll(content))
@@ -492,6 +500,10 @@ class VisionWidget(QWidget):
         self.place_table.model().rowsRemoved.connect(self._pnp_sync_place_combo)
         self.place_table.model().dataChanged.connect(self._pnp_sync_place_combo)
 
+        # Detection
+        self.detect_load_button.clicked.connect(self._detect_load_model)
+        self.detect_auto_pick_button.clicked.connect(self._detect_auto_pick_all)
+
     def _set_advanced_settings_visible(self, visible: bool) -> None:
         for widget in self._advanced_widgets:
             widget.setVisible(visible)
@@ -551,12 +563,74 @@ class VisionWidget(QWidget):
 
         h_src_to_roi = cv2.getPerspectiveTransform(ordered.astype(np.float32), dst.astype(np.float32))
         roi = cv2.warpPerspective(frame, h_src_to_roi, (roi_w, roi_h))
-        self._set_image(self.roi_frame_label, roi)
 
         self._latest_roi_size = (roi_w, roi_h)
         world_quad = self._world_quad()
         self._latest_roi_to_world = cv2.getPerspectiveTransform(dst.astype(np.float32), world_quad.astype(np.float32))
 
+        # --- YOLO detection overlay ---
+        self._detections = []
+        if (
+            self._detector.is_loaded
+            and self.detect_enable_check.isChecked()
+            and self._latest_roi_to_world is not None
+        ):
+            # Determine class filter
+            cls_filter = None
+            filter_text = self.detect_class_combo.currentText()
+            if filter_text != "All Classes":
+                for i, name in enumerate(self._detector.class_names):
+                    if name == filter_text:
+                        cls_filter = i
+                        break
+
+            conf = self.detect_conf_spin.value()
+            # 1. Detect on the ORIGINAL unwarped frame (best for model accuracy)
+            dets = self._detector.detect(frame, conf=conf, class_filter=cls_filter)
+
+            # Colors per class (matching Candy-Sorting scripts)
+            det_colors = {
+                0: (168, 118, 49),
+                1: (88, 190, 53),
+                2: (47, 207, 245),
+                3: (63, 44, 193),
+                4: (164, 166, 13),
+            }
+
+            # Direct homography: original frame -> world coordinates
+            h_src_to_world = cv2.getPerspectiveTransform(ordered.astype(np.float32), world_quad.astype(np.float32))
+
+            for d in dets:
+                # 2. Ignore detections outside the ArUco ROI polygon
+                if cv2.pointPolygonTest(polygon, (d.cx, d.cy), False) < 0:
+                    continue
+
+                # 3. Transform centroid from original pixel -> world coordinate
+                pt_src = np.array([[[d.cx, d.cy]]], dtype=np.float32)
+                world_pt = cv2.perspectiveTransform(pt_src, h_src_to_world)[0][0]
+                wx, wy = float(world_pt[0]), float(world_pt[1])
+                self._detections.append((d.class_name, wx, wy, d.confidence))
+
+                color = det_colors.get(d.class_id, (0, 255, 255))
+                
+                # 4. Draw bounding box and label on the Original Frame (overlay)
+                cv2.rectangle(overlay, (d.x1, d.y1), (d.x2, d.y2), color, 2)
+                cv2.circle(overlay, (int(d.cx), int(d.cy)), 5, color, -1)
+                label = f"{d.class_name} {d.confidence:.2f}"
+                cv2.putText(overlay, label, (d.x1, d.y1 - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+
+                # 5. Transform centroid to ROI pixel and draw on the warped ROI view (for click-to-pick)
+                roi_pt = cv2.perspectiveTransform(pt_src, h_src_to_roi)[0][0]
+                rx, ry = int(roi_pt[0]), int(roi_pt[1])
+                cv2.circle(roi, (rx, ry), 5, color, -1)
+                cv2.putText(roi, d.class_name, (rx + 8, ry + 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+
+            n = len(self._detections)
+            self.detect_status_label.setText(f"{n} detection(s)")
+
+        self._set_image(self.roi_frame_label, roi)
         self._set_image(self.original_frame_label, overlay)
         self.status_label.setText("ROI detected")
 
@@ -700,6 +774,41 @@ class VisionWidget(QWidget):
             return
 
         rx, ry = mapped
+
+        # If detection is active, snap to nearest centroid
+        if (
+            self._detector.is_loaded
+            and self.detect_enable_check.isChecked()
+            and self._detections
+        ):
+            # Re-run centroid→pixel by inverse: we have world coords in _detections,
+            # but we can simply compare with stored pixel centroid by re-transforming.
+            # Simpler: just use world coords and pick the nearest detection.
+            point = np.array([[[rx, ry]]], dtype=np.float32)
+            world_click = cv2.perspectiveTransform(point, self._latest_roi_to_world)[0][0]
+            click_wx, click_wy = float(world_click[0]), float(world_click[1])
+
+            best_dist = float('inf')
+            best_det = None
+            for name, wx, wy, conf in self._detections:
+                dist = (wx - click_wx) ** 2 + (wy - click_wy) ** 2
+                if dist < best_dist:
+                    best_dist = dist
+                    best_det = (name, wx, wy, conf)
+
+            # Snap threshold: 30mm in world space
+            if best_det is not None and best_dist < 30.0 ** 2:
+                name, wx, wy, conf = best_det
+                self._cursor_world = (wx, wy)
+                self.cursor_world_label.setText(f"X: {wx:.2f}  Y: {wy:.2f}")
+                self.pnp_pick_x_spin.setValue(wx)
+                self.pnp_pick_y_spin.setValue(wy)
+                self.status_label.setText(
+                    f"Picked detection: {name} ({conf:.0%}) → X={wx:.2f}, Y={wy:.2f}"
+                )
+                return
+
+        # Default: free-click world coordinate
         point = np.array([[[rx, ry]]], dtype=np.float32)
         world = cv2.perspectiveTransform(point, self._latest_roi_to_world)[0][0]
         wx, wy = float(world[0]), float(world[1])
@@ -998,6 +1107,104 @@ class VisionWidget(QWidget):
         return group
 
     # ------------------------------------------------------------------
+    # Detection – UI builder
+    # ------------------------------------------------------------------
+
+    def _build_detection_group(self) -> QGroupBox:
+        group = QGroupBox("6) YOLO Detection")
+        layout = QGridLayout(group)
+
+        self.detect_load_button = QPushButton("Load Model")
+        self.detect_model_label = QLabel("No model loaded")
+        self.detect_enable_check = QCheckBox("Enable Detection")
+        self.detect_enable_check.setChecked(False)
+        self.detect_enable_check.setEnabled(False)  # until model loaded
+
+        self.detect_conf_spin = QDoubleSpinBox()
+        self.detect_conf_spin.setRange(0.05, 1.0)
+        self.detect_conf_spin.setSingleStep(0.05)
+        self.detect_conf_spin.setValue(0.5)
+        self.detect_conf_spin.setDecimals(2)
+
+        self.detect_class_combo = QComboBox()
+        self.detect_class_combo.addItem("All Classes")
+
+        self.detect_auto_pick_button = QPushButton("🤖  Auto Pick All")
+        self.detect_auto_pick_button.setStyleSheet(
+            "background: #6b2fa0; color: #ffffff; font-weight: bold; padding: 8px 14px;"
+        )
+        self.detect_auto_pick_button.setEnabled(False)
+        self.detect_auto_pick_button.setToolTip(
+            "Batch pick all visible candies.\n"
+            "Sorting trick: If you create a Place with the exact same name as a candy class "
+            "(e.g., 'Lemon'), that candy will automatically be sorted to that place!"
+        )
+
+        self.detect_status_label = QLabel("—")
+
+        layout.addWidget(self.detect_load_button, 0, 0)
+        layout.addWidget(self.detect_model_label, 0, 1, 1, 3)
+        layout.addWidget(self.detect_enable_check, 1, 0)
+        layout.addWidget(QLabel("Confidence"), 1, 1)
+        layout.addWidget(self.detect_conf_spin, 1, 2)
+        layout.addWidget(QLabel("Class"), 1, 3)
+        layout.addWidget(self.detect_class_combo, 1, 4)
+        layout.addWidget(self.detect_auto_pick_button, 2, 0, 1, 2)
+        layout.addWidget(self.detect_status_label, 2, 2, 1, 3)
+
+        return group
+
+    # ------------------------------------------------------------------
+    # Detection – helpers
+    # ------------------------------------------------------------------
+
+    def _detect_load_model(self) -> None:
+        """Open file picker and load a YOLO .pt model."""
+        if not CandyDetector.is_available():
+            self.status_label.setText("ultralytics not installed — run: pip install ultralytics")
+            return
+
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load YOLO Model",
+            "",
+            "PyTorch Weights (*.pt);;All Files (*.*)",
+        )
+        if not path:
+            return
+
+        try:
+            self._detector.load(path)
+        except Exception as exc:
+            self.status_label.setText(f"Model load failed: {exc}")
+            return
+
+        name = Path(path).stem
+        n_cls = len(self._detector.class_names)
+        self.detect_model_label.setText(f"{name} · {n_cls} classes")
+        self.detect_enable_check.setEnabled(True)
+        self.detect_enable_check.setChecked(True)
+        self.detect_auto_pick_button.setEnabled(True)
+
+        # Populate class filter combo
+        self.detect_class_combo.clear()
+        self.detect_class_combo.addItem("All Classes")
+        for cls_name in self._detector.class_names:
+            self.detect_class_combo.addItem(cls_name)
+
+        self.status_label.setText(f"Model loaded: {path}")
+
+    def _detect_auto_pick_all(self) -> None:
+        """Emit all detected candy positions for batch PnP."""
+        if not self._detections:
+            self.status_label.setText("No detections to pick")
+            return
+
+        picks = [(name, wx, wy) for name, wx, wy, _conf in self._detections]
+        self.auto_pick_all_request.emit(picks)
+        self.status_label.setText(f"Auto Pick All: {len(picks)} candy(ies) queued")
+
+    # ------------------------------------------------------------------
     # Pick & Place – helpers
     # ------------------------------------------------------------------
 
@@ -1192,6 +1399,10 @@ class VisionWidget(QWidget):
             "jog_z_step": self.jog_z_step_spin.value(),
             "places": places,
             "pnp": self._pnp_get_config(),
+            "detect_model_path": self._detector.model_path,
+            "detect_confidence": self.detect_conf_spin.value(),
+            "detect_enabled": self.detect_enable_check.isChecked(),
+            "detect_class_filter": self.detect_class_combo.currentText(),
         }
 
     def apply_settings(self, settings: dict[str, Any]) -> None:
@@ -1249,3 +1460,27 @@ class VisionWidget(QWidget):
         if pnp:
             self._pnp_apply_config(pnp)
         self._pnp_sync_place_combo()
+
+        # Detection settings
+        model_path = settings.get("detect_model_path", "")
+        if model_path and CandyDetector.is_available():
+            try:
+                self._detector.load(model_path)
+                name = Path(model_path).stem
+                n_cls = len(self._detector.class_names)
+                self.detect_model_label.setText(f"{name} · {n_cls} classes")
+                self.detect_enable_check.setEnabled(True)
+                self.detect_auto_pick_button.setEnabled(True)
+                self.detect_class_combo.clear()
+                self.detect_class_combo.addItem("All Classes")
+                for cls_name in self._detector.class_names:
+                    self.detect_class_combo.addItem(cls_name)
+            except Exception:
+                pass  # model file may no longer exist
+
+        self.detect_conf_spin.setValue(float(settings.get("detect_confidence", 0.5)))
+        self.detect_enable_check.setChecked(bool(settings.get("detect_enabled", False)))
+        cls_filter = settings.get("detect_class_filter", "All Classes")
+        idx = self.detect_class_combo.findText(str(cls_filter))
+        if idx >= 0:
+            self.detect_class_combo.setCurrentIndex(idx)

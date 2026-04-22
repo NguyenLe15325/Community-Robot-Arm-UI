@@ -110,6 +110,7 @@ class MainWindow(QMainWindow):
         self.vision_widget.gripper_request.connect(self._on_vision_gripper_request)
         self.vision_widget.place_request_world.connect(self._on_vision_place_request)
         self.vision_widget.pick_and_place_request.connect(self._on_pick_and_place_request)
+        self.vision_widget.auto_pick_all_request.connect(self._on_auto_pick_all)
         self.vision_widget.pnp_stop_button.clicked.connect(self._pnp_stop)
         self.vision_widget.save_settings_requested.connect(self._save_app_settings_as)
         self.vision_widget.load_settings_requested.connect(self._load_app_settings_from)
@@ -856,6 +857,83 @@ class MainWindow(QMainWindow):
         self.vision_widget.pnp_execute_button.setEnabled(True)
         self.vision_widget.pnp_stop_button.setEnabled(False)
         self.vision_widget.status_label.setText("Pick & Place: stopped")
+
+    def _on_auto_pick_all(self, picks: list) -> None:
+        """Queue the PnP template once per detected candy.
+
+        Each candy's world XY overrides {PICK_X} and {PICK_Y}.
+        If a Place exists with the same name as the candy class,
+        its coordinates override {PLACE_X}, {PLACE_Y}, and {PLACE_Z}.
+        All other variables come from the current UI state.
+        """
+        import re
+
+        template_text = self.vision_widget.pnp_gcode_edit.toPlainText().strip()
+        if not template_text:
+            self._log("Auto Pick All: no G-code template")
+            return
+
+        base_variables = self.vision_widget._pnp_build_variables()
+        commands: list[str] = []
+
+        # Build a lookup of places by lowercased name for auto-sorting
+        places_by_name = {}
+        for row in range(self.vision_widget.place_table.rowCount()):
+            vals = self.vision_widget._row_values(row)
+            if vals:
+                name, px, py, pz = vals
+                places_by_name[name.lower()] = (px, py, pz)
+
+        for candy_name, wx, wy in picks:
+            variables = dict(base_variables)
+            # Override pick coordinates for this candy
+            variables["PICK_X"] = f"{wx:g}"
+            variables["PICK_Y"] = f"{wy:g}"
+
+            # If a place is named exactly after the class, auto-sort it there!
+            class_lower = candy_name.lower()
+            if class_lower in places_by_name:
+                px, py, pz = places_by_name[class_lower]
+                variables["PLACE_X"] = f"{px:g}"
+                variables["PLACE_Y"] = f"{py:g}"
+                variables["PLACE_Z"] = f"{pz:g}"
+
+            for raw_line in template_text.splitlines():
+                cmd = raw_line.split(";")[0].strip()
+                if not cmd:
+                    continue
+                try:
+                    resolved = cmd.format_map(variables)
+                except (KeyError, ValueError):
+                    continue
+
+                # Convert world→robot for G0/G1
+                m = re.match(r'^G[01]\b', resolved, re.IGNORECASE)
+                if m:
+                    x_m = re.search(r'X([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
+                    y_m = re.search(r'Y([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
+                    z_m = re.search(r'Z([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
+                    f_m = re.search(r'F([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
+                    if x_m or y_m or z_m:
+                        wx2 = float(x_m.group(1)) if x_m else 0.0
+                        wy2 = float(y_m.group(1)) if y_m else 0.0
+                        wz2 = float(z_m.group(1)) if z_m else 0.0
+                        feed = float(f_m.group(1)) if f_m else 30.0
+                        rx, ry, rz = self.transform.world_to_robot_position(wx2, wy2, wz2)
+                        commands.append(build_cartesian_move(rx, ry, rz, feed))
+                        continue
+
+                commands.append(resolved)
+
+        if not commands:
+            self._log("Auto Pick All: no commands generated")
+            return
+
+        self.vision_widget.pnp_execute_button.setEnabled(False)
+        self.vision_widget.pnp_stop_button.setEnabled(True)
+
+        self._submit_commands(commands, source="pnp", recordable=True)
+        self._log(f"Auto Pick All: {len(picks)} candy(ies), {len(commands)} command(s) queued")
 
     def _load_program(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
