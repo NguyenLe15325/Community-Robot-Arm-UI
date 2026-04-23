@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QCheckBox,
     QApplication,
+    QSlider,
 )
 
 if __package__ in (None, ""):
@@ -143,12 +144,14 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(14)
         layout.addWidget(self._build_connection_group())
+        layout.addWidget(self._build_speed_override_group())
         layout.addWidget(self._build_frame_group())
         layout.addWidget(self._build_move_group())
         layout.addWidget(self._build_jog_group())
         layout.addWidget(self._build_joint_group())
         layout.addWidget(self._build_gripper_group())
         layout.addWidget(self._build_quick_group())
+        layout.addWidget(self._build_teach_group())
         layout.addStretch(1)
         return page
 
@@ -159,6 +162,59 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
         layout.addWidget(self._build_program_group(), stretch=1)
         return page
+
+    def _build_speed_override_group(self) -> QGroupBox:
+        group = QGroupBox("Speed Override")
+        layout = QHBoxLayout(group)
+        group.setMinimumWidth(520)
+
+        self.speed_override_slider = QSlider(Qt.Orientation.Horizontal)
+        self.speed_override_slider.setRange(1, 100)
+        self.speed_override_slider.setValue(100)
+        self.speed_override_slider.setTickInterval(10)
+        self.speed_override_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+
+        self.speed_override_label = QLabel("100%")
+        self.speed_override_label.setMinimumWidth(50)
+        self.speed_override_slider.valueChanged.connect(
+            lambda v: self.speed_override_label.setText(f"{v}%")
+        )
+
+        layout.addWidget(QLabel("Speed"))
+        layout.addWidget(self.speed_override_slider, stretch=1)
+        layout.addWidget(self.speed_override_label)
+        return group
+
+    def _build_teach_group(self) -> QGroupBox:
+        from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView
+
+        group = QGroupBox("Teach Points")
+        layout = QVBoxLayout(group)
+        group.setMinimumWidth(520)
+
+        self.teach_table = QTableWidget(0, 10)
+        self.teach_table.setHorizontalHeaderLabels(
+            ["Name", "Xr", "Yr", "Zr", "Xw", "Yw", "Zw", "T1", "T2", "T3"]
+        )
+        self.teach_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.teach_table.setMaximumHeight(200)
+        layout.addWidget(self.teach_table)
+
+        btn_row = QHBoxLayout()
+        self.teach_point_button = QPushButton("Teach Current Pos")
+        self.teach_point_button.setStyleSheet("background: #2d8f5a; color: #ffffff; font-weight: bold;")
+        self.teach_goto_button = QPushButton("Go To Selected")
+        self.teach_insert_button = QPushButton("Insert into Program")
+        self.teach_delete_button = QPushButton("Delete")
+        self.teach_delete_button.setStyleSheet("background: #b34a4a; color: #ffffff;")
+
+        btn_row.addWidget(self.teach_point_button)
+        btn_row.addWidget(self.teach_goto_button)
+        btn_row.addWidget(self.teach_insert_button)
+        btn_row.addWidget(self.teach_delete_button)
+        layout.addLayout(btn_row)
+
+        return group
 
     def _build_terminal_page(self) -> QWidget:
         page = QWidget()
@@ -448,9 +504,23 @@ class MainWindow(QMainWindow):
         ):
             button_row.addWidget(button)
 
+        # Loop count
+        loop_row = QHBoxLayout()
+        loop_row.addWidget(QLabel("Repeat"))
+        self.program_loop_spin = QSpinBox()
+        self.program_loop_spin.setRange(0, 9999)
+        self.program_loop_spin.setValue(1)
+        self.program_loop_spin.setSpecialValueText("∞ (until stop)")
+        self.program_loop_spin.setToolTip("Number of times to repeat the program. 0 = run forever until Stop.")
+        self.program_loop_spin.setMinimumWidth(140)
+        loop_row.addWidget(self.program_loop_spin)
+        loop_row.addWidget(QLabel("time(s)"))
+        loop_row.addStretch(1)
+
         layout.addWidget(self.record_checkbox)
         layout.addWidget(self.program_editor, stretch=1)
         layout.addLayout(button_row)
+        layout.addLayout(loop_row)
 
         return group
 
@@ -492,6 +562,12 @@ class MainWindow(QMainWindow):
         self.program_save_button.clicked.connect(self._save_program)
         self.program_clear_button.clicked.connect(self.program_editor.clear)
         self.program_run_button.clicked.connect(self._run_program)
+
+        # Teach
+        self.teach_point_button.clicked.connect(self._teach_current_pos)
+        self.teach_goto_button.clicked.connect(self._teach_goto)
+        self.teach_insert_button.clicked.connect(self._teach_insert)
+        self.teach_delete_button.clicked.connect(self._teach_delete)
         self.program_stop_button.clicked.connect(self._stop_program)
 
         self.serial.connection_changed.connect(self._on_connection_changed)
@@ -684,6 +760,20 @@ class MainWindow(QMainWindow):
         ]
         self._submit_commands(commands, source="manual", recordable=True)
 
+    def _apply_speed_override(self, command: str) -> str:
+        """Scale F (feedrate) values by the speed override percentage."""
+        import re
+        override = self.speed_override_slider.value() / 100.0
+        if override >= 1.0:
+            return command
+
+        def scale_f(m: re.Match) -> str:
+            original = float(m.group(1))
+            scaled = original * override
+            return f"F{fmt_float(scaled)}"
+
+        return re.sub(r'F([+-]?\d*\.?\d+)', scale_f, command, flags=re.IGNORECASE)
+
     def _submit_command(self, command: str, source: str, recordable: bool) -> None:
         text = command.strip()
         if not text:
@@ -692,6 +782,7 @@ class MainWindow(QMainWindow):
         if recordable and source == "manual" and self.record_checkbox.isChecked():
             self.program_editor.appendPlainText(text)
 
+        text = self._apply_speed_override(text)
         self.executor.enqueue(text, source=source)
 
     def _submit_commands(self, commands: list[str], source: str, recordable: bool) -> None:
@@ -703,6 +794,7 @@ class MainWindow(QMainWindow):
             for cmd in cmd_list:
                 self.program_editor.appendPlainText(cmd)
 
+        cmd_list = [self._apply_speed_override(c) for c in cmd_list]
         self.executor.enqueue_many(cmd_list, source=source)
 
     def _send_terminal_line(self) -> None:
@@ -1101,8 +1193,17 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Program", "No executable commands found.")
             return
 
-        self.executor.enqueue_many(commands, source="program")
-        self._log(f"Program queued: {len(commands)} command(s)")
+        loop_count = self.program_loop_spin.value()
+        if loop_count == 0:
+            loop_count = 99999  # effectively infinite
+
+        all_commands: list[str] = []
+        for _ in range(loop_count):
+            all_commands.extend(commands)
+
+        all_commands = [self._apply_speed_override(c) for c in all_commands]
+        self.executor.enqueue_many(all_commands, source="program")
+        self._log(f"Program queued: {len(commands)} cmd(s) × {loop_count} loop(s) = {len(all_commands)} total")
 
     def _stop_program(self) -> None:
         self.executor.clear_pending()
@@ -1127,6 +1228,104 @@ class MainWindow(QMainWindow):
 
         wx, wy, wz = self.transform.robot_to_world_position(rx, ry, rz)
         self.world_pose_label.setText(f"Xw: {fmt_float(wx)}  Yw: {fmt_float(wy)}  Zw: {fmt_float(wz)}")
+
+        # Store latest M114 values for Teach feature
+        self._last_m114 = parsed
+
+    # ------------------------------------------------------------------
+    # Teach Points
+    # ------------------------------------------------------------------
+
+    def _teach_current_pos(self) -> None:
+        """Send M114, wait for the cached response, and add to the teach table."""
+        if not hasattr(self, "_last_m114") or self._last_m114 is None:
+            self._submit_command("M114", source="manual", recordable=False)
+            self._log("Teach: Sent M114 — click Teach again after response arrives")
+            return
+
+        from PyQt6.QtWidgets import QTableWidgetItem
+        p = self._last_m114
+        rx, ry, rz = p.get('X', 0.0), p.get('Y', 0.0), p.get('Z', 0.0)
+        wx, wy, wz = self.transform.robot_to_world_position(rx, ry, rz)
+
+        row = self.teach_table.rowCount()
+        self.teach_table.insertRow(row)
+        name = f"P{row + 1}"
+        vals = [name,
+                fmt_float(rx), fmt_float(ry), fmt_float(rz),
+                fmt_float(wx), fmt_float(wy), fmt_float(wz),
+                fmt_float(p.get('T1', 0.0)),
+                fmt_float(p.get('T2', 0.0)),
+                fmt_float(p.get('T3', 0.0))]
+        for col, val in enumerate(vals):
+            self.teach_table.setItem(row, col, QTableWidgetItem(val))
+        self._log(f"Teach: Saved {name} — Robot({vals[1]},{vals[2]},{vals[3]}) World({vals[4]},{vals[5]},{vals[6]})")
+
+    def _teach_goto(self) -> None:
+        """Move to the selected teach point using the selected frame."""
+        row = self.teach_table.currentRow()
+        if row < 0:
+            return
+        try:
+            frame = self.frame_combo.currentText().lower()
+            if frame == "world":
+                # Read world coords, convert to robot for sending
+                wx = float(self.teach_table.item(row, 4).text())
+                wy = float(self.teach_table.item(row, 5).text())
+                wz = float(self.teach_table.item(row, 6).text())
+                x, y, z = self.transform.world_to_robot_position(wx, wy, wz)
+            else:
+                # Read robot coords directly
+                x = float(self.teach_table.item(row, 1).text())
+                y = float(self.teach_table.item(row, 2).text())
+                z = float(self.teach_table.item(row, 3).text())
+        except (ValueError, AttributeError):
+            return
+        feed = self.feed_spin.value()
+        commands = ["G90", build_cartesian_move(x, y, z, feed)]
+        self._submit_commands(commands, source="manual", recordable=False)
+        name = self.teach_table.item(row, 0).text()
+        self._log(f"Teach: Moving to {name} (frame={frame})")
+
+    def _teach_insert(self) -> None:
+        """Insert the selected teach point as G-code into the program editor.
+
+        The Program tab sends raw G-code (no coordinate conversion),
+        so we always insert robot coordinates.  When the user has
+        'World' frame selected we convert world→robot first and note
+        the original world coords in the comment.
+        """
+        row = self.teach_table.currentRow()
+        if row < 0:
+            return
+        try:
+            # Always read robot coords for the actual command
+            rx = float(self.teach_table.item(row, 1).text())
+            ry = float(self.teach_table.item(row, 2).text())
+            rz = float(self.teach_table.item(row, 3).text())
+        except (ValueError, AttributeError):
+            return
+        feed = self.feed_spin.value()
+        name = self.teach_table.item(row, 0).text()
+
+        # Build the comment with world coords for reference
+        try:
+            wx = float(self.teach_table.item(row, 4).text())
+            wy = float(self.teach_table.item(row, 5).text())
+            wz = float(self.teach_table.item(row, 6).text())
+            comment = f"; {name} (world: {fmt_float(wx)},{fmt_float(wy)},{fmt_float(wz)})"
+        except (ValueError, AttributeError):
+            comment = f"; {name}"
+
+        line = f"{build_cartesian_move(rx, ry, rz, feed)}  {comment}"
+        self.program_editor.appendPlainText(line)
+        self._log(f"Teach: Inserted {name} (robot coords) into Program")
+
+    def _teach_delete(self) -> None:
+        """Delete the selected teach point."""
+        row = self.teach_table.currentRow()
+        if row >= 0:
+            self.teach_table.removeRow(row)
 
     def _on_queue_changed(self, size: int) -> None:
         self._queue_size = size
