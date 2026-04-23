@@ -73,6 +73,15 @@ class MainWindow(QMainWindow):
         self._terminal_history_index = 0
         self._terminal_draft = ""
 
+        self._auto_sort_active = False
+        self._auto_sort_parked = False
+        self._auto_sort_idle_ticks = 0
+        self._auto_sort_wake_ticks = 0
+        from PyQt6.QtCore import QTimer
+        self._auto_sort_timer = QTimer(self)
+        self._auto_sort_timer.setInterval(100)  # poll 10 times a second
+        self._auto_sort_timer.timeout.connect(self._on_auto_sort_tick)
+
         self._build_ui()
         self._connect_signals()
         self._refresh_ports()
@@ -110,7 +119,7 @@ class MainWindow(QMainWindow):
         self.vision_widget.gripper_request.connect(self._on_vision_gripper_request)
         self.vision_widget.place_request_world.connect(self._on_vision_place_request)
         self.vision_widget.pick_and_place_request.connect(self._on_pick_and_place_request)
-        self.vision_widget.auto_pick_all_request.connect(self._on_auto_pick_all)
+        self.vision_widget.auto_sort_toggled.connect(self._on_auto_sort_toggled)
         self.vision_widget.pnp_stop_button.clicked.connect(self._pnp_stop)
         self.vision_widget.save_settings_requested.connect(self._save_app_settings_as)
         self.vision_widget.load_settings_requested.connect(self._load_app_settings_from)
@@ -853,13 +862,127 @@ class MainWindow(QMainWindow):
     def _pnp_stop(self) -> None:
         """Cancel the running PnP sequence."""
         self.executor.clear_pending()
+        self._auto_sort_active = False
+        self._auto_sort_parked = False
+        self._auto_sort_idle_ticks = 0
+        self._auto_sort_wake_ticks = 0
+        self._auto_sort_timer.stop()
+        self.vision_widget.detect_auto_pick_button.setChecked(False)
+        self.vision_widget._on_auto_sort_clicked(False)
         self._log("Pick & Place: stopped")
         self.vision_widget.pnp_execute_button.setEnabled(True)
         self.vision_widget.pnp_stop_button.setEnabled(False)
         self.vision_widget.status_label.setText("Pick & Place: stopped")
 
-    def _on_auto_pick_all(self, picks: list) -> None:
-        """Queue the PnP template once per detected candy.
+    def _on_auto_sort_toggled(self, active: bool) -> None:
+        """Handle start/stop of continuous auto-sort."""
+        self._auto_sort_active = active
+        if active:
+            if not self.serial.is_connected:
+                self._log("Auto Sort: Error - Robot not connected")
+                self.vision_widget.detect_auto_pick_button.setChecked(False)
+                self.vision_widget._on_auto_sort_clicked(False)
+                return
+            self._log("Auto Sort: Started continuous sorting")
+            self._auto_sort_timer.start()
+            self.vision_widget.pnp_execute_button.setEnabled(False)
+            self.vision_widget.pnp_stop_button.setEnabled(True)
+        else:
+            self._auto_sort_timer.stop()
+            self._log("Auto Sort: Stopped")
+            self.vision_widget.pnp_execute_button.setEnabled(True)
+            self.vision_widget.pnp_stop_button.setEnabled(False)
+
+    def _on_auto_sort_tick(self) -> None:
+        """Polling loop for Look-Pick-Look state machine.
+
+        States:
+          - active, not parked: picking candies one-by-one
+          - active, parked: motors disabled, waiting for detection
+          - idle ticks accumulating: no detection for consecutive ticks
+        """
+        if not self._auto_sort_active:
+            return
+
+        # Ensure robot is still connected
+        if not self.serial.is_connected:
+            self.vision_widget.detect_auto_pick_button.setChecked(False)
+            self.vision_widget._on_auto_sort_clicked(False)
+            self._log("Auto Sort: Stopped - Robot disconnected")
+            return
+
+        # Wait until robot is completely idle
+        if self.executor.queue_size > 0 or self.executor.waiting_ack:
+            return
+
+        # Robot is idle! Get the current best detection
+        best_det = self.vision_widget.get_best_detection()
+
+        if best_det:
+            self._auto_sort_idle_ticks = 0  # reset idle counter
+            candy_name, wx, wy = best_det
+
+            if self._auto_sort_parked:
+                # Require sustained detection before waking
+                self._auto_sort_wake_ticks += 1
+                wake_delay_s = self.vision_widget.detect_wake_delay_spin.value()
+                wake_threshold = max(1, int(wake_delay_s / 0.1))
+
+                remaining = wake_threshold - self._auto_sort_wake_ticks
+                if remaining > 0:
+                    self.vision_widget.detect_status_label.setText(
+                        f"Parked — confirming detection ({remaining} ticks)"
+                    )
+                    return  # keep waiting for sustained detection
+
+                # Sustained detection confirmed — wake up
+                self._auto_sort_parked = False
+                self._auto_sort_wake_ticks = 0
+                self._log("Auto Sort: Sustained detection confirmed — waking up")
+                self.vision_widget.detect_status_label.setText("Waking up...")
+                wake_cmds = self._parse_gcode_lines(
+                    self.vision_widget.detect_wake_edit.toPlainText()
+                )
+                if wake_cmds:
+                    self._submit_commands(wake_cmds, source="pnp", recordable=True)
+                # The pick will happen on the *next* tick after wake completes
+            else:
+                # Normal pick
+                self._generate_and_queue_single_pick(candy_name, wx, wy)
+        else:
+            # No detection right now
+            self._auto_sort_wake_ticks = 0  # reset wake counter
+            if self._auto_sort_parked:
+                return  # already parked, just wait
+
+            self._auto_sort_idle_ticks += 1
+
+            # Compute tick threshold from user-defined timeout (seconds / 0.1s per tick)
+            timeout_s = self.vision_widget.detect_idle_timeout_spin.value()
+            threshold = max(1, int(timeout_s / 0.1))
+
+            if self._auto_sort_idle_ticks >= threshold:
+                self._auto_sort_parked = True
+                self._log("Auto Sort: No candies detected — parking")
+                self.vision_widget.detect_status_label.setText("Parked (waiting)")
+                park_cmds = self._parse_gcode_lines(
+                    self.vision_widget.detect_park_edit.toPlainText()
+                )
+                if park_cmds:
+                    self._submit_commands(park_cmds, source="pnp", recordable=True)
+
+    @staticmethod
+    def _parse_gcode_lines(text: str) -> list[str]:
+        """Parse a G-code text block: strip comments and blank lines."""
+        result: list[str] = []
+        for line in text.splitlines():
+            cmd = line.split(";")[0].strip()
+            if cmd:
+                result.append(cmd)
+        return result
+
+    def _generate_and_queue_single_pick(self, candy_name: str, wx: float, wy: float) -> None:
+        """Generate and queue the PnP template for a single candy.
 
         Each candy's world XY overrides {PICK_X} and {PICK_Y}.
         If a Place exists with the same name as the candy class,
@@ -884,56 +1007,52 @@ class MainWindow(QMainWindow):
                 name, px, py, pz = vals
                 places_by_name[name.lower()] = (px, py, pz)
 
-        for candy_name, wx, wy in picks:
-            variables = dict(base_variables)
-            # Override pick coordinates for this candy
-            variables["PICK_X"] = f"{wx:g}"
-            variables["PICK_Y"] = f"{wy:g}"
+        variables = dict(base_variables)
+        # Override pick coordinates for this candy
+        variables["PICK_X"] = f"{wx:g}"
+        variables["PICK_Y"] = f"{wy:g}"
 
-            # If a place is named exactly after the class, auto-sort it there!
-            class_lower = candy_name.lower()
-            if class_lower in places_by_name:
-                px, py, pz = places_by_name[class_lower]
-                variables["PLACE_X"] = f"{px:g}"
-                variables["PLACE_Y"] = f"{py:g}"
-                variables["PLACE_Z"] = f"{pz:g}"
+        # If a place is named exactly after the class, auto-sort it there!
+        class_lower = candy_name.lower()
+        if class_lower in places_by_name:
+            px, py, pz = places_by_name[class_lower]
+            variables["PLACE_X"] = f"{px:g}"
+            variables["PLACE_Y"] = f"{py:g}"
+            variables["PLACE_Z"] = f"{pz:g}"
 
-            for raw_line in template_text.splitlines():
-                cmd = raw_line.split(";")[0].strip()
-                if not cmd:
+        for raw_line in template_text.splitlines():
+            cmd = raw_line.split(";")[0].strip()
+            if not cmd:
+                continue
+            try:
+                resolved = cmd.format_map(variables)
+            except (KeyError, ValueError):
+                continue
+
+            # Convert world→robot for G0/G1
+            m = re.match(r'^G[01]\b', resolved, re.IGNORECASE)
+            if m:
+                x_m = re.search(r'X([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
+                y_m = re.search(r'Y([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
+                z_m = re.search(r'Z([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
+                f_m = re.search(r'F([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
+                if x_m or y_m or z_m:
+                    wx2 = float(x_m.group(1)) if x_m else 0.0
+                    wy2 = float(y_m.group(1)) if y_m else 0.0
+                    wz2 = float(z_m.group(1)) if z_m else 0.0
+                    feed = float(f_m.group(1)) if f_m else 30.0
+                    rx, ry, rz = self.transform.world_to_robot_position(wx2, wy2, wz2)
+                    commands.append(build_cartesian_move(rx, ry, rz, feed))
                     continue
-                try:
-                    resolved = cmd.format_map(variables)
-                except (KeyError, ValueError):
-                    continue
 
-                # Convert world→robot for G0/G1
-                m = re.match(r'^G[01]\b', resolved, re.IGNORECASE)
-                if m:
-                    x_m = re.search(r'X([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
-                    y_m = re.search(r'Y([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
-                    z_m = re.search(r'Z([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
-                    f_m = re.search(r'F([+-]?\d*\.?\d+)', resolved, re.IGNORECASE)
-                    if x_m or y_m or z_m:
-                        wx2 = float(x_m.group(1)) if x_m else 0.0
-                        wy2 = float(y_m.group(1)) if y_m else 0.0
-                        wz2 = float(z_m.group(1)) if z_m else 0.0
-                        feed = float(f_m.group(1)) if f_m else 30.0
-                        rx, ry, rz = self.transform.world_to_robot_position(wx2, wy2, wz2)
-                        commands.append(build_cartesian_move(rx, ry, rz, feed))
-                        continue
-
-                commands.append(resolved)
+            commands.append(resolved)
 
         if not commands:
-            self._log("Auto Pick All: no commands generated")
+            self._log("Auto Sort: Failed to generate commands")
             return
 
-        self.vision_widget.pnp_execute_button.setEnabled(False)
-        self.vision_widget.pnp_stop_button.setEnabled(True)
-
         self._submit_commands(commands, source="pnp", recordable=True)
-        self._log(f"Auto Pick All: {len(picks)} candy(ies), {len(commands)} command(s) queued")
+        self._log(f"Auto Sort: Picking {candy_name} at X={wx:.1f}, Y={wy:.1f}")
 
     def _load_program(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

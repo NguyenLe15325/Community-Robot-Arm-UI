@@ -66,7 +66,7 @@ class VisionWidget(QWidget):
     place_request_world = pyqtSignal(float, float, float, float, str, float, float)
     # Emits a list of dicts describing each step for the main window to convert & enqueue.
     pick_and_place_request = pyqtSignal(list)  # emits list[str] of G-code lines
-    auto_pick_all_request = pyqtSignal(list)    # emits list of (class_name, world_x, world_y) tuples
+    auto_sort_toggled = pyqtSignal(bool)       # emits True when sorting starts, False when stops
     save_settings_requested = pyqtSignal()
     load_settings_requested = pyqtSignal()
 
@@ -502,7 +502,7 @@ class VisionWidget(QWidget):
 
         # Detection
         self.detect_load_button.clicked.connect(self._detect_load_model)
-        self.detect_auto_pick_button.clicked.connect(self._detect_auto_pick_all)
+        self.detect_auto_pick_button.clicked.connect(self._on_auto_sort_clicked)
 
     def _set_advanced_settings_visible(self, visible: bool) -> None:
         for widget in self._advanced_widgets:
@@ -1111,11 +1111,19 @@ class VisionWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _build_detection_group(self) -> QGroupBox:
-        group = QGroupBox("6) YOLO Detection")
-        layout = QGridLayout(group)
+        group = QGroupBox("6) YOLO Detection & Auto Sort")
+        layout = QVBoxLayout(group)
 
+        # --- Row 1: Model ---
+        model_row = QHBoxLayout()
         self.detect_load_button = QPushButton("Load Model")
         self.detect_model_label = QLabel("No model loaded")
+        model_row.addWidget(self.detect_load_button)
+        model_row.addWidget(self.detect_model_label, stretch=1)
+        layout.addLayout(model_row)
+
+        # --- Row 2: Detection settings ---
+        settings_row = QHBoxLayout()
         self.detect_enable_check = QCheckBox("Enable Detection")
         self.detect_enable_check.setChecked(False)
         self.detect_enable_check.setEnabled(False)  # until model loaded
@@ -1129,28 +1137,80 @@ class VisionWidget(QWidget):
         self.detect_class_combo = QComboBox()
         self.detect_class_combo.addItem("All Classes")
 
-        self.detect_auto_pick_button = QPushButton("🤖  Auto Pick All")
+        settings_row.addWidget(self.detect_enable_check)
+        settings_row.addWidget(QLabel("Confidence"))
+        settings_row.addWidget(self.detect_conf_spin)
+        settings_row.addWidget(QLabel("Class"))
+        settings_row.addWidget(self.detect_class_combo)
+        settings_row.addStretch(1)
+        layout.addLayout(settings_row)
+
+        # --- Row 3: Idle timeout + Wake delay ---
+        timeout_row = QHBoxLayout()
+        self.detect_idle_timeout_spin = QDoubleSpinBox()
+        self.detect_idle_timeout_spin.setRange(0.5, 30.0)
+        self.detect_idle_timeout_spin.setSingleStep(0.5)
+        self.detect_idle_timeout_spin.setValue(1.0)
+        self.detect_idle_timeout_spin.setDecimals(1)
+        self.detect_idle_timeout_spin.setSuffix(" s")
+
+        self.detect_wake_delay_spin = QDoubleSpinBox()
+        self.detect_wake_delay_spin.setRange(0.0, 10.0)
+        self.detect_wake_delay_spin.setSingleStep(0.1)
+        self.detect_wake_delay_spin.setValue(0.5)
+        self.detect_wake_delay_spin.setDecimals(1)
+        self.detect_wake_delay_spin.setSuffix(" s")
+
+        timeout_row.addWidget(QLabel("Idle Timeout"))
+        timeout_row.addWidget(self.detect_idle_timeout_spin)
+        timeout_row.addWidget(QLabel("Wake Delay"))
+        timeout_row.addWidget(self.detect_wake_delay_spin)
+        timeout_row.addStretch(1)
+        layout.addLayout(timeout_row)
+
+        # --- Park sequence (no detection → go to idle) ---
+        layout.addWidget(QLabel("Park Sequence (sent when no detection after timeout):"))
+        self.detect_park_edit = QPlainTextEdit()
+        self.detect_park_edit.setPlainText(
+            "G0 T10 T290 T30   ; park position\n"
+            "M6                ; home gripper\n"
+            "M18               ; disable motors"
+        )
+        self.detect_park_edit.setMaximumHeight(80)
+        font = self.detect_park_edit.font()
+        font.setFamily("Consolas")
+        font.setPointSize(9)
+        self.detect_park_edit.setFont(font)
+        layout.addWidget(self.detect_park_edit)
+
+        # --- Wake-up sequence (detection found after being parked) ---
+        layout.addWidget(QLabel("Wake-up Sequence (sent when detection found after park):"))
+        self.detect_wake_edit = QPlainTextEdit()
+        self.detect_wake_edit.setPlainText(
+            "M17               ; enable motors"
+        )
+        self.detect_wake_edit.setMaximumHeight(50)
+        self.detect_wake_edit.setFont(font)
+        layout.addWidget(self.detect_wake_edit)
+
+        # --- Auto sort button + status ---
+        sort_row = QHBoxLayout()
+        self.detect_auto_pick_button = QPushButton("▶  Start Auto Sort")
         self.detect_auto_pick_button.setStyleSheet(
             "background: #6b2fa0; color: #ffffff; font-weight: bold; padding: 8px 14px;"
         )
         self.detect_auto_pick_button.setEnabled(False)
+        self.detect_auto_pick_button.setCheckable(True)
         self.detect_auto_pick_button.setToolTip(
-            "Batch pick all visible candies.\n"
+            "Start a continuous Look-Pick-Look cycle.\n"
             "Sorting trick: If you create a Place with the exact same name as a candy class "
             "(e.g., 'Lemon'), that candy will automatically be sorted to that place!"
         )
 
         self.detect_status_label = QLabel("—")
-
-        layout.addWidget(self.detect_load_button, 0, 0)
-        layout.addWidget(self.detect_model_label, 0, 1, 1, 3)
-        layout.addWidget(self.detect_enable_check, 1, 0)
-        layout.addWidget(QLabel("Confidence"), 1, 1)
-        layout.addWidget(self.detect_conf_spin, 1, 2)
-        layout.addWidget(QLabel("Class"), 1, 3)
-        layout.addWidget(self.detect_class_combo, 1, 4)
-        layout.addWidget(self.detect_auto_pick_button, 2, 0, 1, 2)
-        layout.addWidget(self.detect_status_label, 2, 2, 1, 3)
+        sort_row.addWidget(self.detect_auto_pick_button)
+        sort_row.addWidget(self.detect_status_label, stretch=1)
+        layout.addLayout(sort_row)
 
         return group
 
@@ -1194,15 +1254,28 @@ class VisionWidget(QWidget):
 
         self.status_label.setText(f"Model loaded: {path}")
 
-    def _detect_auto_pick_all(self) -> None:
-        """Emit all detected candy positions for batch PnP."""
-        if not self._detections:
-            self.status_label.setText("No detections to pick")
-            return
+    def _on_auto_sort_clicked(self, checked: bool) -> None:
+        """Toggle the continuous auto-sort state."""
+        if checked:
+            self.detect_auto_pick_button.setText("⏹  Stop Auto Sort")
+            self.detect_auto_pick_button.setStyleSheet("background: #b34a4a; color: #ffffff; font-weight: bold; padding: 8px 14px;")
+            self.detect_status_label.setText("Auto Sort: Running")
+        else:
+            self.detect_auto_pick_button.setText("▶  Start Auto Sort")
+            self.detect_auto_pick_button.setStyleSheet("background: #6b2fa0; color: #ffffff; font-weight: bold; padding: 8px 14px;")
+            self.detect_status_label.setText("Auto Sort: Stopped")
+        
+        self.auto_sort_toggled.emit(checked)
 
-        picks = [(name, wx, wy) for name, wx, wy, _conf in self._detections]
-        self.auto_pick_all_request.emit(picks)
-        self.status_label.setText(f"Auto Pick All: {len(picks)} candy(ies) queued")
+    def get_best_detection(self) -> tuple[str, float, float] | None:
+        """Return the (class_name, wx, wy) of the most confident detection in the current frame."""
+        if not self._detections:
+            return None
+        
+        # Sort by confidence descending
+        sorted_dets = sorted(self._detections, key=lambda d: d[3], reverse=True)
+        name, wx, wy, _conf = sorted_dets[0]
+        return (name, wx, wy)
 
     # ------------------------------------------------------------------
     # Pick & Place – helpers
@@ -1403,6 +1476,10 @@ class VisionWidget(QWidget):
             "detect_confidence": self.detect_conf_spin.value(),
             "detect_enabled": self.detect_enable_check.isChecked(),
             "detect_class_filter": self.detect_class_combo.currentText(),
+            "detect_idle_timeout": self.detect_idle_timeout_spin.value(),
+            "detect_wake_delay": self.detect_wake_delay_spin.value(),
+            "detect_park_sequence": self.detect_park_edit.toPlainText(),
+            "detect_wake_sequence": self.detect_wake_edit.toPlainText(),
         }
 
     def apply_settings(self, settings: dict[str, Any]) -> None:
@@ -1484,3 +1561,12 @@ class VisionWidget(QWidget):
         idx = self.detect_class_combo.findText(str(cls_filter))
         if idx >= 0:
             self.detect_class_combo.setCurrentIndex(idx)
+
+        self.detect_idle_timeout_spin.setValue(float(settings.get("detect_idle_timeout", 1.0)))
+        self.detect_wake_delay_spin.setValue(float(settings.get("detect_wake_delay", 0.5)))
+        park_seq = settings.get("detect_park_sequence", "")
+        if park_seq:
+            self.detect_park_edit.setPlainText(park_seq)
+        wake_seq = settings.get("detect_wake_sequence", "")
+        if wake_seq:
+            self.detect_wake_edit.setPlainText(wake_seq)
