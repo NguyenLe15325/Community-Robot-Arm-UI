@@ -78,6 +78,11 @@ class MainWindow(QMainWindow):
         self._auto_sort_parked = False
         self._auto_sort_idle_ticks = 0
         self._auto_sort_wake_ticks = 0
+        self._teach_pending = False
+        self._last_m114: dict[str, float] | None = None
+        self._program_running = False
+        self._program_loops_remaining = 0
+        self._program_commands: list[str] = []
         from PyQt6.QtCore import QTimer
         self._auto_sort_timer = QTimer(self)
         self._auto_sort_timer.setInterval(100)  # poll 10 times a second
@@ -452,6 +457,18 @@ class MainWindow(QMainWindow):
         layout.addRow("World Pose", self.world_pose_label)
         layout.addRow("Execution", self.queue_label)
 
+        self.program_loop_label = QLabel("—")
+        layout.addRow("Program", self.program_loop_label)
+
+        btn_row = QHBoxLayout()
+        self.status_refresh_button = QPushButton("Refresh (M114)")
+        self.status_clear_queue_button = QPushButton("Clear Queue")
+        self.status_clear_queue_button.setStyleSheet("background: #b34a4a; color: #ffffff;")
+        btn_row.addWidget(self.status_refresh_button)
+        btn_row.addWidget(self.status_clear_queue_button)
+        btn_row.addStretch(1)
+        layout.addRow(btn_row)
+
         return group
 
     def _build_terminal_group(self) -> QGroupBox:
@@ -569,6 +586,12 @@ class MainWindow(QMainWindow):
         self.teach_insert_button.clicked.connect(self._teach_insert)
         self.teach_delete_button.clicked.connect(self._teach_delete)
         self.program_stop_button.clicked.connect(self._stop_program)
+
+        # Status
+        self.status_refresh_button.clicked.connect(
+            lambda: self._submit_command("M114", source="manual", recordable=False)
+        )
+        self.status_clear_queue_button.clicked.connect(self._clear_queue)
 
         self.serial.connection_changed.connect(self._on_connection_changed)
         self.serial.error.connect(self._on_serial_error)
@@ -1188,31 +1211,160 @@ class MainWindow(QMainWindow):
     def _run_program(self) -> None:
         lines = self.program_editor.toPlainText().splitlines()
         self.program_model.set_lines(lines)
-        commands = self.program_model.executable_lines()
-        if not commands:
+        raw_commands = self.program_model.executable_lines()
+        if not raw_commands:
             QMessageBox.information(self, "Program", "No executable commands found.")
             return
 
-        loop_count = self.program_loop_spin.value()
-        if loop_count == 0:
-            loop_count = 99999  # effectively infinite
+        # Expand CALL directives
+        try:
+            result = self._expand_calls(raw_commands)
+        except RuntimeError as exc:
+            QMessageBox.critical(self, "Program", str(exc))
+            return
 
-        all_commands: list[str] = []
-        for _ in range(loop_count):
-            all_commands.extend(commands)
+        if isinstance(result, tuple):
+            # Infinite CALL: (preamble, loop_body)
+            preamble, loop_body = result
+            self._program_commands = loop_body
+            self._program_loops_total = -1  # infinite
+            self._program_loops_remaining = -1
+            self._program_current_loop = 0
+            self._program_running = True
+            # Enqueue preamble first, then the loop body will follow
+            if preamble:
+                preamble_cmds = [self._apply_speed_override(c) for c in preamble]
+                self.executor.enqueue_many(preamble_cmds, source="program_preamble")
+                self._log(f"Program: {len(preamble)} preamble cmd(s) queued")
+            self._program_enqueue_iteration()
+        else:
+            # Normal program
+            commands = result
+            loop_count = self.program_loop_spin.value()  # 0 = infinite
 
-        all_commands = [self._apply_speed_override(c) for c in all_commands]
-        self.executor.enqueue_many(all_commands, source="program")
-        self._log(f"Program queued: {len(commands)} cmd(s) × {loop_count} loop(s) = {len(all_commands)} total")
+            self._program_commands = commands
+            self._program_loops_total = loop_count if loop_count > 0 else -1
+            self._program_loops_remaining = self._program_loops_total
+            self._program_current_loop = 0
+            self._program_running = True
+            self._program_enqueue_iteration()
+
+    def _program_enqueue_iteration(self) -> None:
+        """Enqueue one iteration of the stored program."""
+        if not self._program_running:
+            return
+        self._program_current_loop += 1
+        cmds = [self._apply_speed_override(c) for c in self._program_commands]
+        self.executor.enqueue_many(cmds, source="program")
+
+        # Update status display
+        if self._program_loops_total > 0:
+            self.program_loop_label.setText(
+                f"▶ Loop {self._program_current_loop} / {self._program_loops_total}"
+            )
+            self._log(f"Program: loop {self._program_current_loop}/{self._program_loops_total}")
+        else:
+            self.program_loop_label.setText(
+                f"▶ Loop {self._program_current_loop} (∞)"
+            )
+            self._log(f"Program: loop {self._program_current_loop} (∞)")
+
+    def _program_on_iteration_done(self) -> None:
+        """Called when one program iteration completes. Queue next or stop."""
+        if not self._program_running:
+            return
+
+        if self._program_loops_remaining > 0:
+            self._program_loops_remaining -= 1
+            if self._program_loops_remaining == 0:
+                self._program_running = False
+                self.program_loop_label.setText(
+                    f"✓ Complete ({self._program_current_loop} loops)"
+                )
+                self._log("Program: all loops complete")
+                return
+
+        # Queue next iteration
+        self._program_enqueue_iteration()
 
     def _stop_program(self) -> None:
+        self._program_running = False
+        self._program_loops_remaining = 0
+        self.program_loop_label.setText("■ Stopped")
         self.executor.clear_pending()
         self._emergency_stop()
+
+    @staticmethod
+    def _expand_calls(
+        lines: list[str], depth: int = 0, max_depth: int = 10
+    ) -> list[str] | tuple[list[str], list[str]]:
+        """Expand CALL directives by inlining the referenced .gcode files.
+
+        Syntax:
+            CALL path/to/file.gcode        ; runs once
+            CALL path/to/file.gcode 5      ; runs 5 times
+            CALL path/to/file.gcode 0      ; runs forever (infinite)
+
+        When repeat=0 (infinite) is encountered at the top level,
+        returns a tuple (preamble, loop_body) instead of a flat list.
+        Nested CALL is supported up to max_depth levels.
+        """
+        if depth > max_depth:
+            raise RuntimeError(f"CALL nesting too deep (>{max_depth}). Possible recursion.")
+
+        result: list[str] = []
+        for line in lines:
+            if line.upper().startswith("CALL "):
+                args = line[5:].strip()
+                # Strip inline comment
+                if ";" in args:
+                    args = args[:args.index(";")].strip()
+
+                # Parse: path [repeat_count]
+                parts = args.rsplit(None, 1)  # split from right
+                repeat = 1
+                if len(parts) == 2 and parts[1].isdigit():
+                    file_path = parts[0]
+                    repeat = int(parts[1])
+                else:
+                    file_path = args
+
+                path = Path(file_path)
+                if not path.is_file():
+                    raise RuntimeError(f"CALL error: file not found: {file_path}")
+
+                sub_lines = [
+                    ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()
+                    if ln.strip() and not ln.strip().startswith(";")
+                ]
+                # Recursively expand nested CALLs (nested infinite not allowed)
+                expanded = MainWindow._expand_calls(sub_lines, depth + 1, max_depth)
+                if isinstance(expanded, tuple):
+                    raise RuntimeError("CALL with infinite repeat (0) cannot be nested.")
+
+                if repeat == 0 and depth == 0:
+                    # Infinite loop: return (preamble, loop_body)
+                    return (result, expanded)
+                else:
+                    repeat = max(1, repeat)
+                    for _ in range(repeat):
+                        result.extend(expanded)
+            else:
+                result.append(line)
+        return result
 
     def _emergency_stop(self) -> None:
         self.executor.clear_pending()
         self.serial.send_line("M112")
         self._log("Emergency stop sent")
+
+    def _clear_queue(self) -> None:
+        """Clear all pending commands without emergency stop."""
+        self._program_running = False
+        self._program_loops_remaining = 0
+        self.program_loop_label.setText("— (queue cleared)")
+        self.executor.clear_pending()
+        self._log("Queue cleared")
 
     def _on_serial_line(self, line: str) -> None:
         self._log(f"RX: {line}")
@@ -1232,20 +1384,25 @@ class MainWindow(QMainWindow):
         # Store latest M114 values for Teach feature
         self._last_m114 = parsed
 
+        # Auto-capture for Teach if pending
+        if self._teach_pending:
+            self._teach_pending = False
+            self._teach_add_point(parsed)
+
     # ------------------------------------------------------------------
     # Teach Points
     # ------------------------------------------------------------------
 
     def _teach_current_pos(self) -> None:
-        """Send M114, wait for the cached response, and add to the teach table."""
-        if not hasattr(self, "_last_m114") or self._last_m114 is None:
-            self._submit_command("M114", source="manual", recordable=False)
-            self._log("Teach: Sent M114 — click Teach again after response arrives")
-            return
+        """Send M114 and automatically capture the position when the response arrives."""
+        self._teach_pending = True
+        self._submit_command("M114", source="manual", recordable=False)
+        self._log("Teach: Querying position...")
 
+    def _teach_add_point(self, parsed: dict[str, float]) -> None:
+        """Add a teach point from parsed M114 data."""
         from PyQt6.QtWidgets import QTableWidgetItem
-        p = self._last_m114
-        rx, ry, rz = p.get('X', 0.0), p.get('Y', 0.0), p.get('Z', 0.0)
+        rx, ry, rz = parsed.get('X', 0.0), parsed.get('Y', 0.0), parsed.get('Z', 0.0)
         wx, wy, wz = self.transform.robot_to_world_position(rx, ry, rz)
 
         row = self.teach_table.rowCount()
@@ -1254,9 +1411,9 @@ class MainWindow(QMainWindow):
         vals = [name,
                 fmt_float(rx), fmt_float(ry), fmt_float(rz),
                 fmt_float(wx), fmt_float(wy), fmt_float(wz),
-                fmt_float(p.get('T1', 0.0)),
-                fmt_float(p.get('T2', 0.0)),
-                fmt_float(p.get('T3', 0.0))]
+                fmt_float(parsed.get('T1', 0.0)),
+                fmt_float(parsed.get('T2', 0.0)),
+                fmt_float(parsed.get('T3', 0.0))]
         for col, val in enumerate(vals):
             self.teach_table.setItem(row, col, QTableWidgetItem(val))
         self._log(f"Teach: Saved {name} — Robot({vals[1]},{vals[2]},{vals[3]}) World({vals[4]},{vals[5]},{vals[6]})")
@@ -1288,18 +1445,11 @@ class MainWindow(QMainWindow):
         self._log(f"Teach: Moving to {name} (frame={frame})")
 
     def _teach_insert(self) -> None:
-        """Insert the selected teach point as G-code into the program editor.
-
-        The Program tab sends raw G-code (no coordinate conversion),
-        so we always insert robot coordinates.  When the user has
-        'World' frame selected we convert world→robot first and note
-        the original world coords in the comment.
-        """
+        """Insert the selected teach point as raw G-code into the program editor."""
         row = self.teach_table.currentRow()
         if row < 0:
             return
         try:
-            # Always read robot coords for the actual command
             rx = float(self.teach_table.item(row, 1).text())
             ry = float(self.teach_table.item(row, 2).text())
             rz = float(self.teach_table.item(row, 3).text())
@@ -1307,19 +1457,8 @@ class MainWindow(QMainWindow):
             return
         feed = self.feed_spin.value()
         name = self.teach_table.item(row, 0).text()
-
-        # Build the comment with world coords for reference
-        try:
-            wx = float(self.teach_table.item(row, 4).text())
-            wy = float(self.teach_table.item(row, 5).text())
-            wz = float(self.teach_table.item(row, 6).text())
-            comment = f"; {name} (world: {fmt_float(wx)},{fmt_float(wy)},{fmt_float(wz)})"
-        except (ValueError, AttributeError):
-            comment = f"; {name}"
-
-        line = f"{build_cartesian_move(rx, ry, rz, feed)}  {comment}"
-        self.program_editor.appendPlainText(line)
-        self._log(f"Teach: Inserted {name} (robot coords) into Program")
+        self.program_editor.appendPlainText(build_cartesian_move(rx, ry, rz, feed))
+        self._log(f"Teach: Inserted {name} into Program")
 
     def _teach_delete(self) -> None:
         """Delete the selected teach point."""
@@ -1332,7 +1471,7 @@ class MainWindow(QMainWindow):
         state = "waiting ack" if self.executor.waiting_ack else "idle"
         self.queue_label.setText(f"Queue: {size} ({state})")
 
-        # Re-enable PnP execute button when the queue fully drains
+        # Re-enable PnP execute button when fully idle
         if size == 0 and not self.executor.waiting_ack:
             if hasattr(self, "vision_widget"):
                 if not self.vision_widget.pnp_execute_button.isEnabled():
@@ -1348,6 +1487,13 @@ class MainWindow(QMainWindow):
         flag = "OK" if success else "FAIL"
         self._log(f"DONE [{source}] {flag}: {command} | {response}")
         self._on_queue_changed(self._queue_size)
+
+        # Program loop: when the last program command completes, queue next iteration
+        if (self._program_running
+                and source == "program"
+                and self.executor.queue_size == 0
+                and not self.executor.waiting_ack):
+            self._program_on_iteration_done()
 
     def _log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
