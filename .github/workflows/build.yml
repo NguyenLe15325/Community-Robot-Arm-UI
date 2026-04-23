@@ -20,7 +20,7 @@ jobs:
           - os: ubuntu-22.04
             artifact: CommunityRobotArmUI-Linux
             ext: .tar.gz
-          - os: macos-13
+          - os: macos-latest
             artifact: CommunityRobotArmUI-macOS
             ext: .tar.gz
 
