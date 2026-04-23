@@ -174,7 +174,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(self._build_gripper_group(), 1, 1)
         # Full width bottom
         grid.addWidget(self._build_teach_group(), 3, 0, 1, 2)
-        grid.setRowStretch(4, 1)
+        grid.setRowStretch(3, 1)
         return page
 
     def _build_program_page(self) -> QWidget:
@@ -214,11 +214,14 @@ class MainWindow(QMainWindow):
 
         self.teach_table = QTableWidget(0, 10)
         self.teach_table.setHorizontalHeaderLabels(
-            ["Name", "Xr", "Yr", "Zr", "Xw", "Yw", "Zw", "T1", "T2", "T3"]
+            ["Name", "Xr", "Yr", "Zr", "Xw", "Yw", "Zw", "θ1", "θ2", "θ3"]
         )
-        self.teach_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.teach_table.setMaximumHeight(200)
-        layout.addWidget(self.teach_table)
+        header = self.teach_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.teach_table.setAlternatingRowColors(True)
+        self.teach_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.teach_table.setMinimumHeight(330)
+        layout.addWidget(self.teach_table, stretch=1)
 
         btn_row = QHBoxLayout()
         self.teach_point_button = QPushButton("Teach Current Pos")
