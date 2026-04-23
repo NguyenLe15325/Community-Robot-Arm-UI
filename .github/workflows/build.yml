@@ -119,10 +119,11 @@ jobs:
           APPRUN
           chmod +x AppDir/AppRun
 
-          # Download and run appimagetool
+          # Download appimagetool and extract (FUSE not available on GH runners)
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
-          ./appimagetool-x86_64.AppImage AppDir ${{ matrix.artifact }}.AppImage
+          ./appimagetool-x86_64.AppImage --appimage-extract
+          ./squashfs-root/AppRun AppDir ${{ matrix.artifact }}.AppImage
 
       - name: Upload Linux AppImage
         if: runner.os == 'Linux'
