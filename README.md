@@ -4,6 +4,13 @@ A professional desktop GUI for controlling a 3-DOF robot arm over serial (G-code
 
 Built with **PyQt6** · **OpenCV** · **Python 3.10+**
 
+### Related Repositories
+
+| Repository | Description |
+|------------|-------------|
+| [Community-Robot-Arm](https://github.com/NguyenLe15325/Community-Robot-Arm) | Firmware — Arduino-based 3-DOF arm with G-code interpreter, kinematics, and stepper control |
+| [Candy-Sorting](https://github.com/NguyenLe15325/Candy-Sorting) | YOLO models — trained weights for candy detection/sorting (see supported model types below) |
+
 ---
 
 ## Features
@@ -26,7 +33,11 @@ Built with **PyQt6** · **OpenCV** · **Python 3.10+**
 - **Place Positions** — named place targets with save/load to JSON
 - **Pick & Place Sequence** — G-code template editor with variable substitution (`{PICK_X}`, `{PLACE_Y}`, etc.)
 - **Template Save/Load** — export/import PnP templates as `.gcode` files independently
-- **YOLO Detection** — load a `.pt` model for real-time object detection
+- **YOLO Detection** — load a `.pt` model for real-time object detection. Supported model types:
+  - **Object Detection** (`yolov8n.pt`, etc.) — bounding-box detection
+  - **Instance Segmentation** (`yolov8n-seg.pt`, etc.) — pixel-level masks
+  - **Oriented Bounding Box** (`yolov8n-obb.pt`, etc.) — rotated bounding boxes
+  - Pre-trained candy sorting models available at [Candy-Sorting](https://github.com/NguyenLe15325/Candy-Sorting)
 - **Auto Sort** — continuous Look-Pick-Look cycle with class-based sorting, idle parking, and wake-on-detection
 - **Collapsible Sections** — toggle visibility of each group to reduce scrolling
 
@@ -61,7 +72,7 @@ Built with **PyQt6** · **OpenCV** · **Python 3.10+**
 
 ### Prerequisites
 - Python 3.10 or higher
-- The robot arm connected via USB serial (firmware: [Community-Robot-Arm](https://github.com/...))
+- The robot arm connected via USB serial (firmware: [Community-Robot-Arm](https://github.com/NguyenLe15325/Community-Robot-Arm))
 
 ### Installation
 
