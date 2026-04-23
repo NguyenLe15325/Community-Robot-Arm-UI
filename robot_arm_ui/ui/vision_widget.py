@@ -7,7 +7,7 @@ from typing import Any, Optional
 from robot_arm_ui.core.candy_detector import CandyDetector, Detection
 
 from PyQt6.QtCore import QPoint, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QMouseEvent, QPainter, QPixmap
+from PyQt6.QtGui import QFont, QImage, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -109,31 +109,70 @@ class VisionWidget(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(12)
+        root.setSpacing(8)
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(8, 8, 8, 8)
-        content_layout.setSpacing(12)
+        content_layout.setContentsMargins(4, 4, 4, 4)
+        content_layout.setSpacing(6)
 
+        # Camera settings
         content_layout.addWidget(self._build_camera_group())
 
-        frame_row = QHBoxLayout()
+        # Frame view toggle
+        frame_toggle_row = QHBoxLayout()
+        frame_toggle_row.addWidget(QLabel("View:"))
+        self.frame_view_combo = QComboBox()
+        self.frame_view_combo.addItems(["ROI Only", "Original Only", "Both"])
+        self.frame_view_combo.setCurrentIndex(0)  # ROI by default
+        self.frame_view_combo.currentIndexChanged.connect(self._on_frame_view_changed)
+        frame_toggle_row.addWidget(self.frame_view_combo)
+        frame_toggle_row.addStretch(1)
+        content_layout.addLayout(frame_toggle_row)
+
+        # Camera frames
+        self._frame_container = QWidget()
+        self._frame_layout = QHBoxLayout(self._frame_container)
+        self._frame_layout.setContentsMargins(0, 0, 0, 0)
         self.original_frame_label = ImageLabel("Original frame")
         self.roi_frame_label = ImageLabel("ROI frame (click to pick XY)")
-        frame_row.addWidget(self.original_frame_label, stretch=1)
-        frame_row.addWidget(self.roi_frame_label, stretch=1)
-        content_layout.addLayout(frame_row)
+        self._frame_layout.addWidget(self.original_frame_label, stretch=1)
+        self._frame_layout.addWidget(self.roi_frame_label, stretch=1)
+        content_layout.addWidget(self._frame_container)
+        # Apply default view
+        self._on_frame_view_changed(0)
 
-        content_layout.addWidget(self._build_pick_group())
-        content_layout.addWidget(self._build_move_group())
-        content_layout.addWidget(self._build_gripper_group())
-        content_layout.addWidget(self._build_places_group())
-        content_layout.addWidget(self._build_pick_and_place_group())
-        content_layout.addWidget(self._build_detection_group())
+        # --- Control panels (same order as numbering) ---
+        content_layout.addWidget(self._collapsible(self._build_pick_group(), expanded=True))
+        content_layout.addWidget(self._collapsible(self._build_move_group(), expanded=False))
+        content_layout.addWidget(self._collapsible(self._build_gripper_group(), expanded=True))
+        content_layout.addWidget(self._collapsible(self._build_places_group(), expanded=True))
+        content_layout.addWidget(self._collapsible(self._build_pick_and_place_group(), expanded=True))
+        content_layout.addWidget(self._collapsible(self._build_detection_group(), expanded=True))
         content_layout.addStretch(1)
 
         root.addWidget(self._wrap_scroll(content))
+
+    def _on_frame_view_changed(self, index: int) -> None:
+        """Toggle which camera frames are visible."""
+        # 0=ROI Only, 1=Original Only, 2=Both
+        self.original_frame_label.setVisible(index in (1, 2))
+        self.roi_frame_label.setVisible(index in (0, 2))
+
+    @staticmethod
+    def _collapsible(group: QGroupBox, expanded: bool = True) -> QGroupBox:
+        """Make a QGroupBox collapsible via its checkable toggle."""
+        group.setCheckable(True)
+        group.setChecked(expanded)
+        # Hide/show children when toggled
+        def _toggle(checked: bool) -> None:
+            for child in group.findChildren(QWidget):
+                if child.parent() == group:
+                    child.setVisible(checked)
+        group.toggled.connect(_toggle)
+        if not expanded:
+            _toggle(False)
+        return group
 
     def _wrap_scroll(self, content: QWidget) -> QScrollArea:
         area = QScrollArea()
@@ -362,29 +401,29 @@ class VisionWidget(QWidget):
 
     def _build_gripper_group(self) -> QGroupBox:
         group = QGroupBox("3) Gripper")
-        layout = QHBoxLayout(group)
+        layout = QGridLayout(group)
 
         # Gripper distance controls
         self.gripper_close_dist_spin = self._float_spin(5.0)
         self.gripper_open_dist_spin = self._float_spin(20.0)
         self.gripper_feed_spin = self._float_spin(4.0)
 
-        self.gripper_open_button = QPushButton("Open Gripper")
-        self.gripper_close_button = QPushButton("Close Gripper")
-        self.gripper_home_button = QPushButton("Home Gripper (M6)")
+        self.gripper_open_button = QPushButton("Open")
+        self.gripper_close_button = QPushButton("Close")
+        self.gripper_home_button = QPushButton("Home (M6)")
         self.gripper_open_button.setStyleSheet("background: #2d8f5a; color: #ffffff;")
         self.gripper_close_button.setStyleSheet("background: #b34a4a; color: #ffffff;")
         self.gripper_home_button.setStyleSheet("background: #4263eb; color: #ffffff;")
 
-        layout.addWidget(QLabel("Close (mm)"))
-        layout.addWidget(self.gripper_close_dist_spin)
-        layout.addWidget(QLabel("Open (mm)"))
-        layout.addWidget(self.gripper_open_dist_spin)
-        layout.addWidget(QLabel("Speed"))
-        layout.addWidget(self.gripper_feed_spin)
-        layout.addWidget(self.gripper_open_button)
-        layout.addWidget(self.gripper_close_button)
-        layout.addWidget(self.gripper_home_button)
+        layout.addWidget(QLabel("Close (mm)"), 0, 0)
+        layout.addWidget(self.gripper_close_dist_spin, 0, 1)
+        layout.addWidget(QLabel("Open (mm)"), 0, 2)
+        layout.addWidget(self.gripper_open_dist_spin, 0, 3)
+        layout.addWidget(QLabel("Speed"), 0, 4)
+        layout.addWidget(self.gripper_feed_spin, 0, 5)
+        layout.addWidget(self.gripper_open_button, 1, 0, 1, 2)
+        layout.addWidget(self.gripper_close_button, 1, 2, 1, 2)
+        layout.addWidget(self.gripper_home_button, 1, 4, 1, 2)
         return group
 
     def _build_places_group(self) -> QGroupBox:
@@ -495,6 +534,8 @@ class VisionWidget(QWidget):
         # Pick & Place sequence
         self.pnp_use_cursor_button.clicked.connect(self._pnp_use_cursor_xy)
         self.pnp_generate_button.clicked.connect(self._pnp_generate_default)
+        self.pnp_save_template_button.clicked.connect(self._pnp_save_template)
+        self.pnp_load_template_button.clicked.connect(self._pnp_load_template)
         self.pnp_execute_button.clicked.connect(self._pnp_execute)
         self.place_table.model().rowsInserted.connect(self._pnp_sync_place_combo)
         self.place_table.model().rowsRemoved.connect(self._pnp_sync_place_combo)
@@ -1075,16 +1116,18 @@ class VisionWidget(QWidget):
             "  M3 S{GRIP_CLOSE} F{GRIP_FEED}"
         )
         self.pnp_gcode_edit.setMinimumHeight(300)
-        font = self.pnp_gcode_edit.font()
-        font.setFamily("Consolas")
-        font.setPointSize(10)
-        self.pnp_gcode_edit.setFont(font)
+        self.pnp_gcode_edit.setFont(QFont("Consolas", 10))
         layout.addWidget(self.pnp_gcode_edit)
 
         # --- Buttons ---
         btn_row = QHBoxLayout()
         self.pnp_generate_button = QPushButton("Generate Default")
+        self.pnp_save_template_button = QPushButton("Save Template")
+        self.pnp_load_template_button = QPushButton("Load Template")
         btn_row.addWidget(self.pnp_generate_button)
+        btn_row.addWidget(self.pnp_save_template_button)
+        btn_row.addWidget(self.pnp_load_template_button)
+        btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
         exec_row = QHBoxLayout()
@@ -1105,6 +1148,35 @@ class VisionWidget(QWidget):
         self._pnp_generate_default()
 
         return group
+
+    def _pnp_save_template(self) -> None:
+        """Save the current PnP G-code template to a file."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save PnP Template",
+            str(Path.cwd() / "templates" / "pnp_template.gcode"),
+            "G-code Files (*.gcode *.txt);;All Files (*.*)",
+        )
+        if not path:
+            return
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(self.pnp_gcode_edit.toPlainText(), encoding="utf-8")
+        self.status_label.setText(f"Template saved: {path}")
+
+    def _pnp_load_template(self) -> None:
+        """Load a PnP G-code template from a file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load PnP Template",
+            str(Path.cwd() / "templates"),
+            "G-code Files (*.gcode *.txt);;All Files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+            self.pnp_gcode_edit.setPlainText(text)
+            self.status_label.setText(f"Template loaded: {path}")
+        except Exception as exc:
+            self.status_label.setText(f"Failed to load template: {exc}")
 
     # ------------------------------------------------------------------
     # Detection – UI builder
@@ -1177,10 +1249,8 @@ class VisionWidget(QWidget):
             "M18               ; disable motors"
         )
         self.detect_park_edit.setMaximumHeight(80)
-        font = self.detect_park_edit.font()
-        font.setFamily("Consolas")
-        font.setPointSize(9)
-        self.detect_park_edit.setFont(font)
+        _mono = QFont("Consolas", 9)
+        self.detect_park_edit.setFont(_mono)
         layout.addWidget(self.detect_park_edit)
 
         # --- Wake-up sequence (detection found after being parked) ---
@@ -1190,7 +1260,7 @@ class VisionWidget(QWidget):
             "M17               ; enable motors"
         )
         self.detect_wake_edit.setMaximumHeight(50)
-        self.detect_wake_edit.setFont(font)
+        self.detect_wake_edit.setFont(_mono)
         layout.addWidget(self.detect_wake_edit)
 
         # --- Auto sort button + status ---

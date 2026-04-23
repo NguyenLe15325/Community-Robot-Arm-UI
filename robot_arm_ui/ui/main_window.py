@@ -101,23 +101,40 @@ class MainWindow(QMainWindow):
         self.serial.disconnect_port()
         super().closeEvent(event)
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
+        if event.key() == Qt.Key.Key_Escape:
+            self._emergency_stop()
+            return
+        super().keyPressEvent(event)
+
     def _build_ui(self) -> None:
         root = QWidget(self)
         self.setCentralWidget(root)
+        outer = QHBoxLayout(root)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
 
-        wrapper = QVBoxLayout(root)
-        wrapper.setContentsMargins(16, 16, 16, 16)
-        wrapper.setSpacing(12)
+        # --- Left sidebar (always visible) ---
+        sidebar = QWidget()
+        sidebar.setMaximumWidth(340)
+        sb = QVBoxLayout(sidebar)
+        sb.setContentsMargins(0, 0, 0, 0)
+        sb.setSpacing(6)
+        sb.addWidget(self._build_connection_group())
+        sb.addWidget(self._build_status_group())
+        sb.addWidget(self._build_speed_override_group())
+        sb.addWidget(self._build_quick_group())
+        sb.addStretch(1)
+        outer.addWidget(sidebar)
 
+        # --- Right tabs ---
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
-        wrapper.addWidget(self.tabs)
-
         self.tabs.addTab(self._wrap_scroll(self._build_control_page()), "Control")
         self.tabs.addTab(self._build_vision_page(), "Vision")
-        self.tabs.addTab(self._wrap_scroll(self._build_program_page()), "Program")
-        self.tabs.addTab(self._wrap_scroll(self._build_terminal_page()), "Terminal")
-        self.tabs.addTab(self._wrap_scroll(self._build_status_page()), "Status")
+        self.tabs.addTab(self._build_program_page(), "Program")
+        self.tabs.addTab(self._build_terminal_page(), "Terminal")
+        outer.addWidget(self.tabs, stretch=1)
 
     def _build_vision_page(self) -> QWidget:
         self.vision_widget = VisionWidget()
@@ -145,33 +162,32 @@ class MainWindow(QMainWindow):
 
     def _build_control_page(self) -> QWidget:
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(14)
-        layout.addWidget(self._build_connection_group())
-        layout.addWidget(self._build_speed_override_group())
-        layout.addWidget(self._build_frame_group())
-        layout.addWidget(self._build_move_group())
-        layout.addWidget(self._build_jog_group())
-        layout.addWidget(self._build_joint_group())
-        layout.addWidget(self._build_gripper_group())
-        layout.addWidget(self._build_quick_group())
-        layout.addWidget(self._build_teach_group())
-        layout.addStretch(1)
+        grid = QGridLayout(page)
+        grid.setContentsMargins(4, 4, 4, 4)
+        grid.setSpacing(8)
+        # Left column
+        grid.addWidget(self._build_frame_group(), 0, 0)
+        grid.addWidget(self._build_move_group(), 1, 0)
+        grid.addWidget(self._build_jog_group(), 2, 0)
+        # Right column
+        grid.addWidget(self._build_joint_group(), 0, 1)
+        grid.addWidget(self._build_gripper_group(), 1, 1)
+        # Full width bottom
+        grid.addWidget(self._build_teach_group(), 3, 0, 1, 2)
+        grid.setRowStretch(4, 1)
         return page
 
     def _build_program_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(14)
+        layout.setSpacing(8)
         layout.addWidget(self._build_program_group(), stretch=1)
         return page
 
     def _build_speed_override_group(self) -> QGroupBox:
         group = QGroupBox("Speed Override")
         layout = QHBoxLayout(group)
-        group.setMinimumWidth(520)
 
         self.speed_override_slider = QSlider(Qt.Orientation.Horizontal)
         self.speed_override_slider.setRange(1, 100)
@@ -195,7 +211,6 @@ class MainWindow(QMainWindow):
 
         group = QGroupBox("Teach Points")
         layout = QVBoxLayout(group)
-        group.setMinimumWidth(520)
 
         self.teach_table = QTableWidget(0, 10)
         self.teach_table.setHorizontalHeaderLabels(
@@ -225,23 +240,13 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(14)
+        layout.setSpacing(8)
         layout.addWidget(self._build_terminal_group(), stretch=1)
-        return page
-
-    def _build_status_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(14)
-        layout.addWidget(self._build_status_group())
-        layout.addStretch(1)
         return page
 
     def _build_connection_group(self) -> QGroupBox:
         group = QGroupBox("Connection")
         layout = QGridLayout(group)
-        group.setMinimumWidth(520)
 
         self.port_combo = QComboBox()
         self.refresh_button = QPushButton("Refresh")
@@ -255,9 +260,9 @@ class MainWindow(QMainWindow):
         self.connection_label = QLabel("Disconnected")
         self.connection_label.setObjectName("ConnectionStatus")
 
-        self.port_combo.setMinimumWidth(180)
-        self.baud_combo.setMinimumWidth(120)
-        self.connect_button.setMinimumWidth(110)
+        self.port_combo.setMinimumWidth(100)
+        self.baud_combo.setMinimumWidth(100)
+        self.connect_button.setMinimumWidth(90)
 
         layout.addWidget(QLabel("Port"), 0, 0)
         layout.addWidget(self.port_combo, 0, 1)
@@ -271,9 +276,8 @@ class MainWindow(QMainWindow):
         return group
 
     def _build_frame_group(self) -> QGroupBox:
-        group = QGroupBox("World Frame Transform (world -> robot)")
+        group = QGroupBox("World Frame Transform")
         form = QFormLayout(group)
-        group.setMinimumWidth(520)
 
         self.tx_spin = self._float_spin(-1000.0, 1000.0, 0.0)
         self.ty_spin = self._float_spin(-1000.0, 1000.0, 0.0)
@@ -296,16 +300,11 @@ class MainWindow(QMainWindow):
         form.addRow("Pitch (deg)", self.pitch_spin)
         form.addRow("Yaw (deg)", self.yaw_spin)
 
-        transform_help = QLabel(
-            "World->Robot: p_robot = R * (p_world - t)\n"
-            "t = (Tx, Ty, Tz) in mm\n"
-            "R = Rz(Yaw) * Ry(Pitch) * Rx(Roll)\n"
-            "Robot->World (display): p_world = R^T * p_robot + t"
-        )
-        transform_help.setWordWrap(True)
-        form.addRow(transform_help)
-
         self.apply_frame_button = QPushButton("Apply Transform")
+        self.apply_frame_button.setToolTip(
+            "World→Robot: p_robot = R * (p_world - t)\n"
+            "Robot→World: p_world = R^T * p_robot + t"
+        )
         form.addRow(self.apply_frame_button)
 
         return group
@@ -313,7 +312,6 @@ class MainWindow(QMainWindow):
     def _build_move_group(self) -> QGroupBox:
         group = QGroupBox("Cartesian Move")
         layout = QGridLayout(group)
-        group.setMinimumWidth(520)
 
         self.frame_combo = QComboBox()
         self.frame_combo.addItems(["Robot", "World"])
@@ -348,7 +346,6 @@ class MainWindow(QMainWindow):
     def _build_jog_group(self) -> QGroupBox:
         group = QGroupBox("Jog")
         layout = QGridLayout(group)
-        group.setMinimumWidth(520)
 
         self.jog_step_spin = self._float_spin(0.1, 100.0, 5.0)
         self.jog_step_spin.setSingleStep(0.5)
@@ -378,7 +375,6 @@ class MainWindow(QMainWindow):
     def _build_joint_group(self) -> QGroupBox:
         group = QGroupBox("Joint Move")
         layout = QGridLayout(group)
-        group.setMinimumWidth(520)
 
         self.t1_spin = self._float_spin(-90.0, 90.0, 0.0)
         self.t2_spin = self._float_spin(0.0, 130.0, 90.0)
@@ -401,8 +397,7 @@ class MainWindow(QMainWindow):
 
     def _build_quick_group(self) -> QGroupBox:
         group = QGroupBox("Quick Commands")
-        layout = QHBoxLayout(group)
-        group.setMinimumWidth(520)
+        layout = QGridLayout(group)
 
         self.cmd_m17 = QPushButton("M17")
         self.cmd_m18 = QPushButton("M18")
@@ -411,15 +406,19 @@ class MainWindow(QMainWindow):
         self.cmd_m119 = QPushButton("M119")
         self.cmd_m112 = QPushButton("M112")
 
-        for button in (self.cmd_m17, self.cmd_m18, self.cmd_g28, self.cmd_m114, self.cmd_m119, self.cmd_m112):
-            layout.addWidget(button)
+        self.cmd_m112.setStyleSheet("background: #d32f2f; color: #fff; font-weight: bold;")
+        layout.addWidget(self.cmd_m17, 0, 0)
+        layout.addWidget(self.cmd_m18, 0, 1)
+        layout.addWidget(self.cmd_g28, 0, 2)
+        layout.addWidget(self.cmd_m114, 1, 0)
+        layout.addWidget(self.cmd_m119, 1, 1)
+        layout.addWidget(self.cmd_m112, 1, 2)
 
         return group
 
     def _build_gripper_group(self) -> QGroupBox:
         group = QGroupBox("Gripper")
         layout = QGridLayout(group)
-        group.setMinimumWidth(520)
 
         self.gripper_close_dist_spin = self._float_spin(0.1, 100.0, 5.0)
         self.gripper_open_dist_spin = self._float_spin(0.1, 100.0, 20.0)
@@ -447,7 +446,6 @@ class MainWindow(QMainWindow):
     def _build_status_group(self) -> QGroupBox:
         group = QGroupBox("Status")
         layout = QFormLayout(group)
-        group.setMinimumWidth(680)
 
         self.robot_pose_label = QLabel("X: --  Y: --  Z: --")
         self.world_pose_label = QLabel("Xw: --  Yw: --  Zw: --")
@@ -474,7 +472,6 @@ class MainWindow(QMainWindow):
     def _build_terminal_group(self) -> QGroupBox:
         group = QGroupBox("Terminal")
         layout = QVBoxLayout(group)
-        group.setMinimumWidth(680)
 
         self.terminal_output = QPlainTextEdit()
         self.terminal_output.setReadOnly(True)
@@ -498,12 +495,21 @@ class MainWindow(QMainWindow):
     def _build_program_group(self) -> QGroupBox:
         group = QGroupBox("Program")
         layout = QVBoxLayout(group)
-        group.setMinimumWidth(680)
 
         self.record_checkbox = QCheckBox("Record manual commands into program")
         self.program_editor = QPlainTextEdit()
-        self.program_editor.setPlaceholderText("One G-code command per line. ';' starts a comment line.")
-        self.program_editor.setMinimumHeight(500)
+        self.program_editor.setPlaceholderText(
+            "One G-code command per line.  ';' starts a comment.\n\n"
+            "Subroutines (external .gcode files):\n"
+            "  CALL path/to/file.gcode        ; run once\n"
+            "  CALL path/to/file.gcode 5      ; run 5 times\n"
+            "  CALL path/to/file.gcode 0      ; run forever (until Stop)\n\n"
+            "Preamble (runs once before loops):\n"
+            "  G28               ; home first\n"
+            "  ---               ; split marker\n"
+            "  CALL routine.gcode 0   ; loop body\n"
+        )
+        self.program_editor.setMinimumHeight(300)
 
         button_row = QHBoxLayout()
         self.program_load_button = QPushButton("Load")
@@ -608,7 +614,7 @@ class MainWindow(QMainWindow):
         spin.setValue(value)
         spin.setDecimals(3)
         spin.setSingleStep(0.5)
-        spin.setMinimumWidth(130)
+        spin.setMinimumWidth(90)
         return spin
 
     def _refresh_ports(self) -> None:
@@ -665,6 +671,7 @@ class MainWindow(QMainWindow):
                     "yaw": self.yaw_spin.value(),
                 },
                 "vision": self.vision_widget.get_settings() if hasattr(self, "vision_widget") else {},
+                "teach_points": self._get_teach_points(),
             }
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             self._settings_path = path
@@ -701,6 +708,10 @@ class MainWindow(QMainWindow):
                     self.gripper_feed_spin.setValue(float(vision.get("gripper_feed", self.gripper_feed_spin.value())))
                 except Exception:
                     pass
+
+            # Teach points
+            teach_pts = payload.get("teach_points", [])
+            self._set_teach_points(teach_pts)
 
             self._settings_path = path
 
@@ -1466,6 +1477,30 @@ class MainWindow(QMainWindow):
         if row >= 0:
             self.teach_table.removeRow(row)
 
+    def _get_teach_points(self) -> list[dict]:
+        """Serialize teach table to a list of dicts for JSON persistence."""
+        from PyQt6.QtWidgets import QTableWidgetItem
+        points: list[dict] = []
+        headers = ["name", "xr", "yr", "zr", "xw", "yw", "zw", "t1", "t2", "t3"]
+        for row in range(self.teach_table.rowCount()):
+            pt: dict = {}
+            for col, key in enumerate(headers):
+                item = self.teach_table.item(row, col)
+                pt[key] = item.text() if item else ""
+            points.append(pt)
+        return points
+
+    def _set_teach_points(self, points: list[dict]) -> None:
+        """Restore teach table from a list of dicts."""
+        from PyQt6.QtWidgets import QTableWidgetItem
+        self.teach_table.setRowCount(0)
+        headers = ["name", "xr", "yr", "zr", "xw", "yw", "zw", "t1", "t2", "t3"]
+        for pt in points:
+            row = self.teach_table.rowCount()
+            self.teach_table.insertRow(row)
+            for col, key in enumerate(headers):
+                self.teach_table.setItem(row, col, QTableWidgetItem(str(pt.get(key, ""))))
+
     def _on_queue_changed(self, size: int) -> None:
         self._queue_size = size
         state = "waiting ack" if self.executor.waiting_ack else "idle"
@@ -1506,29 +1541,35 @@ class MainWindow(QMainWindow):
                 background: #11161b;
                 color: #e7ecef;
                 font-family: 'Segoe UI';
-                font-size: 13px;
+                font-size: 9pt;
             }
             QGroupBox {
                 border: 1px solid #2d3740;
-                border-radius: 10px;
-                margin-top: 14px;
-                padding: 8px;
+                border-radius: 8px;
+                margin-top: 18px;
+                padding: 6px;
                 background: #161c22;
                 font-weight: 600;
                 color: #f0f4f7;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 5px;
+                subcontrol-position: top left;
+                left: 10px;
+                top: 2px;
+                padding: 0 4px;
                 color: #c7d2da;
+            }
+            QGroupBox::indicator {
+                width: 13px;
+                height: 13px;
             }
             QPushButton {
                 background: #2f81f7;
                 color: #f8fbff;
                 border: 0;
-                border-radius: 8px;
-                padding: 9px 12px;
+                border-radius: 6px;
+                padding: 6px 10px;
                 font-weight: 600;
             }
             QPushButton:hover {
@@ -1541,8 +1582,8 @@ class MainWindow(QMainWindow):
                 background: #0f1419;
                 color: #eef4f7;
                 border: 1px solid #33404a;
-                border-radius: 6px;
-                padding: 6px;
+                border-radius: 5px;
+                padding: 4px;
             }
             QTabWidget::pane {
                 border: 1px solid #2d3740;
@@ -1552,12 +1593,12 @@ class MainWindow(QMainWindow):
             QTabBar::tab {
                 background: #1a2229;
                 color: #b9c6cf;
-                padding: 10px 18px;
+                padding: 8px 16px;
                 border: 1px solid #2d3740;
                 border-bottom: none;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                min-width: 100px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                min-width: 80px;
             }
             QTabBar::tab:selected {
                 background: #11161b;
