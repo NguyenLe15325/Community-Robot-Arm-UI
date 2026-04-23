@@ -48,7 +48,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install PyQt6 pyserial numpy
+          pip install opencv-python-headless
           pip install pyinstaller
 
       - name: Build with PyInstaller
