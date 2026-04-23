@@ -326,6 +326,37 @@ Community-Robot-Arm-UI/
 
 ---
 
+## Building Executables
+
+### Local Build (current OS)
+
+```bash
+pip install pyinstaller
+pyinstaller CommunityRobotArmUI.spec --noconfirm
+```
+
+The output will be in `dist/CommunityRobotArmUI/`. Run the executable directly — no Python installation needed on the target machine.
+
+> **Note:** PyInstaller cannot cross-compile. A Windows `.exe` must be built on Windows, a Linux binary on Linux, etc.
+
+### Automated CI/CD (all platforms)
+
+This repo includes a GitHub Actions workflow (`.github/workflows/build.yml`) that automatically builds for **Windows**, **Linux**, and **macOS** when you push a version tag:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+This triggers the CI pipeline which:
+1. Builds on `windows-latest`, `ubuntu-22.04`, and `macos-13`
+2. Packages each as `.zip` (Windows) or `.tar.gz` (Linux/macOS)
+3. Creates a GitHub Release with all 3 downloads attached
+
+You can also trigger builds manually from the **Actions** tab in GitHub.
+
+---
+
 ## License
 
 See [LICENSE](LICENSE) for details.
