@@ -348,6 +348,8 @@ pyinstaller CommunityRobotArmUI.spec --noconfirm
 
 The output will be in `dist/CommunityRobotArmUI/`. Run the executable directly — no Python installation needed on the target machine.
 
+> **Lightweight AI Inference:** The build script intentionally excludes heavy PyTorch/Ultralytics dependencies. Instead, it bundles **ONNX Runtime** (~30MB), keeping the final executable small (~80MB instead of 400MB+). This requires exporting your YOLO models to `.onnx` before using them in the packaged app.
+
 > **Note:** PyInstaller cannot cross-compile. A Windows `.exe` must be built on Windows, a Linux binary on Linux, etc.
 
 ### Automated CI/CD (all platforms)
