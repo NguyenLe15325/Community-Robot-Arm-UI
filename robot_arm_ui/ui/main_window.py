@@ -1201,7 +1201,8 @@ class MainWindow(QMainWindow):
         return path
 
     def _load_program(self) -> None:
-        programs_dir = self._get_app_data_dir("programs")
+        programs_dir = self._get_base_dir() / "programs"
+        programs_dir.mkdir(parents=True, exist_ok=True)
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Load Program",
@@ -1221,7 +1222,8 @@ class MainWindow(QMainWindow):
         self._log(f"Program loaded: {path}")
 
     def _save_program(self) -> None:
-        programs_dir = self._get_app_data_dir("programs")
+        programs_dir = self._get_base_dir() / "programs"
+        programs_dir.mkdir(parents=True, exist_ok=True)
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Program",
