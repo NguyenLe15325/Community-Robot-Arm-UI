@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from robot_arm_ui.core.candy_detector import CandyDetector, Detection
+from robot_arm_ui.core.paths import get_config_dir
 
 from PyQt6.QtCore import QPoint, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QImage, QMouseEvent, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QFont, QImage, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -31,6 +32,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QColorDialog,
     QDialog,
+    QMessageBox,
 )
 
 try:
@@ -585,21 +587,9 @@ class VisionWidget(QWidget):
         self.status_label.setText("Camera running")
         self._timer.start()
 
-    def _get_base_dir(self) -> Path:
-        import sys
-        if getattr(sys, 'frozen', False):
-            # Running as compiled executable
-            return Path(sys.executable).parent
-        else:
-            # Running from source script
-            return Path(__file__).resolve().parent.parent.parent
-
-    def _get_app_data_dir(self, subfolder: str = "") -> Path:
-        path = self._get_base_dir() / "config"
-        if subfolder:
-            path = path / subfolder
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+    @staticmethod
+    def _get_app_data_dir(subfolder: str = "") -> Path:
+        return get_config_dir(subfolder)
 
     def _create_default_files(self) -> None:
         """Ensure default templates exist in the user's Documents folder on first run."""
@@ -1356,7 +1346,7 @@ class VisionWidget(QWidget):
 
     def _detect_load_model(self) -> None:
         """Open file picker and load an ONNX or YOLO .pt model."""
-        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
 
         if not CandyDetector.is_available():
             QMessageBox.warning(
@@ -1406,7 +1396,6 @@ class VisionWidget(QWidget):
     def _edit_class_colors(self) -> None:
         """Open a dialog to edit class detection colors."""
         if not self._detector.class_names:
-            from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self, "No Model", "Please load a model first to edit its class colors.")
             return
 
@@ -1431,7 +1420,6 @@ class VisionWidget(QWidget):
 
             def make_handler(cls_id=i, button=btn):
                 def handler():
-                    from PyQt6.QtGui import QColor
                     cb, cg, cr = self.det_colors.get(cls_id, (0, 255, 255))
                     init_color = QColor(cr, cg, cb)
                     c = QColorDialog.getColor(init_color, dialog, f"Select Color for {self._detector.class_names[cls_id]}")
@@ -1479,7 +1467,6 @@ class VisionWidget(QWidget):
                             b, g, r = self.det_colors[cls_id]
                             color_buttons[cls_id].setStyleSheet(f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;")
                 except Exception as e:
-                    from PyQt6.QtWidgets import QMessageBox
                     QMessageBox.warning(dialog, "Error", f"Failed to load colors: {e}")
 
         export_btn.clicked.connect(do_export)

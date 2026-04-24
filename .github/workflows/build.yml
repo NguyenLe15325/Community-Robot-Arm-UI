@@ -133,20 +133,29 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.AppImage
 
-      # --- Upload Raw Config Files for Release ---
-      - name: Prepare Config Files
+      # --- macOS: also create a .tar.gz archive ---
+      - name: Package macOS tar.gz
+        if: runner.os == 'macOS'
+        run: tar -czf ${{ matrix.artifact }}.tar.gz -C dist CommunityRobotArmUI
+
+      - name: Upload macOS tar.gz
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-tar
+          path: ${{ matrix.artifact }}.tar.gz
+
+      # --- Linux: also create a .tar.gz archive ---
+      - name: Package Linux tar.gz
         if: runner.os == 'Linux'
-        run: |
-          mkdir -p release_configs
-          cp config/colors/default_candy_colors.json release_configs/
-          cp config/templates/default_pnp.gcode release_configs/
-          
-      - name: Upload Config Templates
+        run: tar -czf ${{ matrix.artifact }}.tar.gz -C dist CommunityRobotArmUI
+
+      - name: Upload Linux tar.gz
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: ConfigFiles
-          path: release_configs/*
+          name: ${{ matrix.artifact }}-tar
+          path: ${{ matrix.artifact }}.tar.gz
 
   release:
     needs: build

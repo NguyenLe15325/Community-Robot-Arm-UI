@@ -5,6 +5,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from robot_arm_ui.core.paths import default_settings_path, get_config_dir, get_programs_dir
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import (
@@ -148,16 +150,8 @@ class MainWindow(QMainWindow):
         self.vision_widget.load_settings_requested.connect(self._load_app_settings_from)
         return self.vision_widget
 
-    def _get_base_dir(self) -> Path:
-        if getattr(sys, 'frozen', False):
-            # Running as compiled executable
-            return Path(sys.executable).parent
-        else:
-            # Running from source script
-            return Path(__file__).resolve().parent.parent.parent
-
     def _default_external_settings_path(self) -> Path:
-        return self._get_base_dir() / "config" / "ui_settings.json"
+        return default_settings_path()
 
     def _wrap_scroll(self, content: QWidget) -> QScrollArea:
         area = QScrollArea()
@@ -1193,16 +1187,12 @@ class MainWindow(QMainWindow):
         self._submit_commands(commands, source="pnp", recordable=True)
         self._log(f"Auto Sort: Picking {candy_name} at X={wx:.1f}, Y={wy:.1f}")
 
-    def _get_app_data_dir(self, subfolder: str = "") -> Path:
-        path = self._get_base_dir() / "config"
-        if subfolder:
-            path = path / subfolder
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+    @staticmethod
+    def _get_app_data_dir(subfolder: str = "") -> Path:
+        return get_config_dir(subfolder)
 
     def _load_program(self) -> None:
-        programs_dir = self._get_base_dir() / "programs"
-        programs_dir.mkdir(parents=True, exist_ok=True)
+        programs_dir = get_programs_dir()
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Load Program",
@@ -1222,8 +1212,7 @@ class MainWindow(QMainWindow):
         self._log(f"Program loaded: {path}")
 
     def _save_program(self) -> None:
-        programs_dir = self._get_base_dir() / "programs"
-        programs_dir.mkdir(parents=True, exist_ok=True)
+        programs_dir = get_programs_dir()
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Program",
