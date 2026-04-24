@@ -586,9 +586,7 @@ class VisionWidget(QWidget):
         self._timer.start()
 
     def _get_app_data_dir(self, subfolder: str = "") -> Path:
-        docs = Path.home() / "Documents"
-        base = docs if docs.exists() else Path.home()
-        path = base / "Community-Robot-Arm-UI"
+        path = Path("config")
         if subfolder:
             path = path / subfolder
         path.mkdir(parents=True, exist_ok=True)
