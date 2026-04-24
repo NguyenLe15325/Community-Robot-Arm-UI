@@ -60,6 +60,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='assets/icon.ico',
+    contents_directory='.',  # Keep data files next to exe (PyInstaller 6.x default is _internal/)
 )
 
 coll = COLLECT(
