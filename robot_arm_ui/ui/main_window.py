@@ -149,9 +149,8 @@ class MainWindow(QMainWindow):
         return self.vision_widget
 
     def _default_external_settings_path(self) -> Path:
-        from PyQt6.QtCore import QStandardPaths
-        docs_str = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-        base = Path(docs_str) if docs_str else Path.home()
+        docs = Path.home() / "Documents"
+        base = docs if docs.exists() else Path.home()
         return base / "Community-Robot-Arm-UI" / "ui_settings.json"
 
     def _wrap_scroll(self, content: QWidget) -> QScrollArea:
@@ -1189,9 +1188,8 @@ class MainWindow(QMainWindow):
         self._log(f"Auto Sort: Picking {candy_name} at X={wx:.1f}, Y={wy:.1f}")
 
     def _get_app_data_dir(self, subfolder: str = "") -> Path:
-        from PyQt6.QtCore import QStandardPaths
-        docs_str = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-        base = Path(docs_str) if docs_str else Path.home()
+        docs = Path.home() / "Documents"
+        base = docs if docs.exists() else Path.home()
         path = base / "Community-Robot-Arm-UI"
         if subfolder:
             path = path / subfolder

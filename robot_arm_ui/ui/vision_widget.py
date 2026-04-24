@@ -586,9 +586,8 @@ class VisionWidget(QWidget):
         self._timer.start()
 
     def _get_app_data_dir(self, subfolder: str = "") -> Path:
-        from PyQt6.QtCore import QStandardPaths
-        docs_str = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-        base = Path(docs_str) if docs_str else Path.home()
+        docs = Path.home() / "Documents"
+        base = docs if docs.exists() else Path.home()
         path = base / "Community-Robot-Arm-UI"
         if subfolder:
             path = path / subfolder
