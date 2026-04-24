@@ -585,8 +585,17 @@ class VisionWidget(QWidget):
         self.status_label.setText("Camera running")
         self._timer.start()
 
+    def _get_base_dir(self) -> Path:
+        import sys
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            return Path(sys.executable).parent
+        else:
+            # Running from source script
+            return Path(__file__).resolve().parent.parent.parent
+
     def _get_app_data_dir(self, subfolder: str = "") -> Path:
-        path = Path("config")
+        path = self._get_base_dir() / "config"
         if subfolder:
             path = path / subfolder
         path.mkdir(parents=True, exist_ok=True)

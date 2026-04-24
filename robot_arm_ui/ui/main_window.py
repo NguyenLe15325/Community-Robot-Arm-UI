@@ -148,8 +148,16 @@ class MainWindow(QMainWindow):
         self.vision_widget.load_settings_requested.connect(self._load_app_settings_from)
         return self.vision_widget
 
+    def _get_base_dir(self) -> Path:
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            return Path(sys.executable).parent
+        else:
+            # Running from source script
+            return Path(__file__).resolve().parent.parent.parent
+
     def _default_external_settings_path(self) -> Path:
-        return Path("config/ui_settings.json")
+        return self._get_base_dir() / "config" / "ui_settings.json"
 
     def _wrap_scroll(self, content: QWidget) -> QScrollArea:
         area = QScrollArea()
@@ -1186,7 +1194,7 @@ class MainWindow(QMainWindow):
         self._log(f"Auto Sort: Picking {candy_name} at X={wx:.1f}, Y={wy:.1f}")
 
     def _get_app_data_dir(self, subfolder: str = "") -> Path:
-        path = Path("config")
+        path = self._get_base_dir() / "config"
         if subfolder:
             path = path / subfolder
         path.mkdir(parents=True, exist_ok=True)
