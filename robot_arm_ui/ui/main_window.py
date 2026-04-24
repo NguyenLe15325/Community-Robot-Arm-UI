@@ -149,8 +149,9 @@ class MainWindow(QMainWindow):
         return self.vision_widget
 
     def _default_external_settings_path(self) -> Path:
-        docs = Path.home() / "Documents"
-        base = docs if docs.exists() else Path.home()
+        from PyQt6.QtCore import QStandardPaths
+        docs_str = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+        base = Path(docs_str) if docs_str else Path.home()
         return base / "Community-Robot-Arm-UI" / "ui_settings.json"
 
     def _wrap_scroll(self, content: QWidget) -> QScrollArea:
@@ -1187,9 +1188,18 @@ class MainWindow(QMainWindow):
         self._submit_commands(commands, source="pnp", recordable=True)
         self._log(f"Auto Sort: Picking {candy_name} at X={wx:.1f}, Y={wy:.1f}")
 
+    def _get_app_data_dir(self, subfolder: str = "") -> Path:
+        from PyQt6.QtCore import QStandardPaths
+        docs_str = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+        base = Path(docs_str) if docs_str else Path.home()
+        path = base / "Community-Robot-Arm-UI"
+        if subfolder:
+            path = path / subfolder
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def _load_program(self) -> None:
-        programs_dir = Path("config/programs")
-        programs_dir.mkdir(parents=True, exist_ok=True)
+        programs_dir = self._get_app_data_dir("programs")
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Load Program",
@@ -1209,8 +1219,7 @@ class MainWindow(QMainWindow):
         self._log(f"Program loaded: {path}")
 
     def _save_program(self) -> None:
-        programs_dir = Path("config/programs")
-        programs_dir.mkdir(parents=True, exist_ok=True)
+        programs_dir = self._get_app_data_dir("programs")
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Program",

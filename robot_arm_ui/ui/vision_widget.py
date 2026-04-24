@@ -101,6 +101,7 @@ class VisionWidget(QWidget):
 
         self._build_ui()
         self._connect_signals()
+        self._create_default_files()
 
         if not CV_AVAILABLE:
             self.status_label.setText("OpenCV not available. Install opencv-contrib-python and numpy.")
@@ -584,6 +585,49 @@ class VisionWidget(QWidget):
         self.status_label.setText("Camera running")
         self._timer.start()
 
+    def _get_app_data_dir(self, subfolder: str = "") -> Path:
+        from PyQt6.QtCore import QStandardPaths
+        docs_str = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+        base = Path(docs_str) if docs_str else Path.home()
+        path = base / "Community-Robot-Arm-UI"
+        if subfolder:
+            path = path / subfolder
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _create_default_files(self) -> None:
+        """Ensure default templates exist in the user's Documents folder on first run."""
+        # 1. Default Colors
+        colors_dir = self._get_app_data_dir("colors")
+        default_colors_file = colors_dir / "default_candy_colors.json"
+        if not default_colors_file.exists():
+            default_colors = {
+                "0": [168, 118, 49],
+                "1": [88, 190, 53],
+                "2": [47, 207, 245],
+                "3": [63, 44, 193],
+                "4": [164, 166, 13]
+            }
+            default_colors_file.write_text(json.dumps(default_colors, indent=4), encoding="utf-8")
+
+        # 2. Default PnP Template
+        templates_dir = self._get_app_data_dir("templates")
+        default_pnp_file = templates_dir / "default_pnp.gcode"
+        if not default_pnp_file.exists():
+            lines = [
+                "G90                                                     ; absolute mode",
+                "G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{MOVE_FEED}      ; approach above pick",
+                "M6                                                      ; gripper home",
+                "G1 X{PICK_X} Y{PICK_Y} Z{PICK_Z} F{MOVE_FEED}          ; descend to pick",
+                "M3 S{GRIP_CLOSE} F{GRIP_FEED}                           ; gripper close",
+                "G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{PICK_FEED}      ; retract up from pick",
+                "G1 X{PLACE_X} Y{PLACE_Y} Z{APPROACH_Z} F{PICK_FEED}    ; approach above place",
+                "G1 X{PLACE_X} Y{PLACE_Y} Z{PLACE_Z} F{PICK_FEED}       ; descend to place",
+                "M5 S{GRIP_OPEN} F{GRIP_FEED}                            ; gripper open",
+                "G1 X{PLACE_X} Y{PLACE_Y} Z{APPROACH_Z} F{MOVE_FEED}    ; retract up from place",
+            ]
+            default_pnp_file.write_text("\n".join(lines), encoding="utf-8")
+
     def _update_frame(self) -> None:
         if self._cap is None:
             return
@@ -1006,8 +1050,7 @@ class VisionWidget(QWidget):
         )
 
     def _save_places_file(self) -> None:
-        places_dir = Path("config/places")
-        places_dir.mkdir(parents=True, exist_ok=True)
+        places_dir = self._get_app_data_dir("places")
         path_str, _ = QFileDialog.getSaveFileName(
             self,
             "Save Place Positions",
@@ -1032,8 +1075,7 @@ class VisionWidget(QWidget):
             self.status_label.setText(f"Save places failed: {exc}")
 
     def _load_places_file(self) -> None:
-        places_dir = Path("config/places")
-        places_dir.mkdir(parents=True, exist_ok=True)
+        places_dir = self._get_app_data_dir("places")
         path_str, _ = QFileDialog.getOpenFileName(
             self,
             "Load Place Positions",
@@ -1159,8 +1201,7 @@ class VisionWidget(QWidget):
 
     def _pnp_save_template(self) -> None:
         """Save the current PnP G-code template to a file."""
-        templates_dir = Path("config/templates")
-        templates_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir = self._get_app_data_dir("templates")
         path, _ = QFileDialog.getSaveFileName(
             self, "Save PnP Template",
             str(templates_dir / "pnp_template.gcode"),
@@ -1174,8 +1215,7 @@ class VisionWidget(QWidget):
 
     def _pnp_load_template(self) -> None:
         """Load a PnP G-code template from a file."""
-        templates_dir = Path("config/templates")
-        templates_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir = self._get_app_data_dir("templates")
         path, _ = QFileDialog.getOpenFileName(
             self, "Load PnP Template",
             str(templates_dir),
@@ -1323,8 +1363,7 @@ class VisionWidget(QWidget):
             )
             return
 
-        models_dir = Path("config/models")
-        models_dir.mkdir(parents=True, exist_ok=True)
+        models_dir = self._get_app_data_dir("models")
         path, _ = QFileDialog.getOpenFileName(
             self, "Load Detection Model",
             str(models_dir),
@@ -1414,16 +1453,14 @@ class VisionWidget(QWidget):
         main_layout.addLayout(btn_layout)
 
         def do_export():
-            colors_dir = Path("config/colors")
-            colors_dir.mkdir(parents=True, exist_ok=True)
+            colors_dir = self._get_app_data_dir("colors")
             path, _ = QFileDialog.getSaveFileName(dialog, "Export Colors", str(colors_dir / "theme.json"), "JSON Files (*.json)")
             if path:
                 with open(path, "w") as f:
                     json.dump(self.det_colors, f, indent=4)
 
         def do_import():
-            colors_dir = Path("config/colors")
-            colors_dir.mkdir(parents=True, exist_ok=True)
+            colors_dir = self._get_app_data_dir("colors")
             path, _ = QFileDialog.getOpenFileName(dialog, "Import Colors", str(colors_dir), "JSON Files (*.json)")
             if path:
                 try:
