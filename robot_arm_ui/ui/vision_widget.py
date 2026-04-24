@@ -1289,16 +1289,24 @@ class VisionWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _detect_load_model(self) -> None:
-        """Open file picker and load a YOLO .pt model."""
+        """Open file picker and load an ONNX or YOLO .pt model."""
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
         if not CandyDetector.is_available():
-            self.status_label.setText("ultralytics not installed — run: pip install ultralytics")
+            QMessageBox.warning(
+                self, "No Inference Backend",
+                "No inference backend is available.\n\n"
+                "Install one of:\n"
+                "    pip install onnxruntime     (recommended, lightweight)\n"
+                "    pip install ultralytics     (full YOLO framework)\n\n"
+                "Then restart the application.",
+            )
             return
 
-        from PyQt6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load YOLO Model",
+            self, "Load Detection Model",
             "",
-            "PyTorch Weights (*.pt);;All Files (*.*)",
+            CandyDetector.supported_formats(),
         )
         if not path:
             return
@@ -1306,12 +1314,16 @@ class VisionWidget(QWidget):
         try:
             self._detector.load(path)
         except Exception as exc:
-            self.status_label.setText(f"Model load failed: {exc}")
+            QMessageBox.critical(
+                self, "Model Load Failed",
+                f"Could not load the model:\n\n{exc}",
+            )
             return
 
         name = Path(path).stem
         n_cls = len(self._detector.class_names)
-        self.detect_model_label.setText(f"{name} · {n_cls} classes")
+        backend = "ONNX" if path.endswith(".onnx") else "YOLO"
+        self.detect_model_label.setText(f"{name} · {n_cls} classes ({backend})")
         self.detect_enable_check.setEnabled(True)
         self.detect_enable_check.setChecked(True)
         self.detect_auto_pick_button.setEnabled(True)
@@ -1322,7 +1334,7 @@ class VisionWidget(QWidget):
         for cls_name in self._detector.class_names:
             self.detect_class_combo.addItem(cls_name)
 
-        self.status_label.setText(f"Model loaded: {path}")
+        self.status_label.setText(f"Model loaded ({backend}): {path}")
 
     def _on_auto_sort_clicked(self, checked: bool) -> None:
         """Toggle the continuous auto-sort state."""

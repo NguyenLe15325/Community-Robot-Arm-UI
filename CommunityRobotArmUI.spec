@@ -22,6 +22,7 @@ a = Analysis(
         'serial.tools.list_ports',
         'numpy',
         'cv2',
+        'onnxruntime',
     ],
     hookspath=[],
     hooksconfig={},

@@ -36,7 +36,6 @@ Built with **PyQt6** · **OpenCV** · **Python 3.10+**
 - **YOLO Detection** — load a `.pt` model for real-time object detection. Supported model types:
   - **Object Detection** (`yolov8n.pt`, etc.) — bounding-box detection
   - **Instance Segmentation** (`yolov8n-seg.pt`, etc.) — pixel-level masks
-  - **Oriented Bounding Box** (`yolov8n-obb.pt`, etc.) — rotated bounding boxes
   - Pre-trained candy sorting models available at [Candy-Sorting](https://github.com/NguyenLe15325/Candy-Sorting)
 - **Auto Sort** — continuous Look-Pick-Look cycle with class-based sorting, idle parking, and wake-on-detection
 - **Collapsible Sections** — toggle visibility of each group to reduce scrolling
@@ -91,10 +90,21 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### Optional: YOLO Detection
+### Model Deployment (YOLO → ONNX)
+
+The app uses **ONNX Runtime** for lightweight inference (bundled in executables).
+To use your trained YOLO model, export it to ONNX format first:
+
 ```bash
+# One-time export (requires ultralytics)
 pip install ultralytics
+python scripts/export_onnx.py path/to/best.pt
 ```
+
+Then load the resulting `.onnx` file in the app (Vision → Load Model).
+
+> **Tip:** The `.onnx` file is self-contained — it includes class names and input size.
+> No Python or ultralytics needed on the target machine.
 
 ### Run
 
@@ -322,7 +332,8 @@ Community-Robot-Arm-UI/
 | `pyserial ≥ 3.5` | Serial communication |
 | `numpy ≥ 1.24` | Coordinate transforms |
 | `opencv-contrib-python ≥ 4.9` | Camera, ArUco detection |
-| `ultralytics` *(optional)* | YOLO object detection for auto-sort |
+| `onnxruntime ≥ 1.17` | Lightweight model inference (ONNX) |
+| `ultralytics` *(optional)* | Only needed for `.pt` model loading or ONNX export |
 
 ---
 
