@@ -133,6 +133,21 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.AppImage
 
+      # --- Upload Raw Config Files for Release ---
+      - name: Prepare Config Files
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p release_configs
+          cp config/colors/default_candy_colors.json release_configs/
+          cp config/templates/default_pnp.gcode release_configs/
+          
+      - name: Upload Config Templates
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConfigFiles
+          path: release_configs/*
+
   release:
     needs: build
     runs-on: ubuntu-latest
