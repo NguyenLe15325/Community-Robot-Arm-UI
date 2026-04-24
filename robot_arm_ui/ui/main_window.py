@@ -725,10 +725,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Settings", f"Failed to load settings:\n{exc}")
 
     def _save_app_settings_as(self) -> None:
+        config_dir = Path("config")
+        config_dir.mkdir(parents=True, exist_ok=True)
         path_str, _ = QFileDialog.getSaveFileName(
             self,
             "Save Settings File",
-            str(self._settings_path),
+            str(config_dir / "ui_settings.json"),
             "JSON Files (*.json);;All Files (*.*)",
         )
         if not path_str:
@@ -736,10 +738,12 @@ class MainWindow(QMainWindow):
         self._save_app_settings(silent=False, target_path=Path(path_str))
 
     def _load_app_settings_from(self) -> None:
+        config_dir = Path("config")
+        config_dir.mkdir(parents=True, exist_ok=True)
         path_str, _ = QFileDialog.getOpenFileName(
             self,
             "Load Settings File",
-            str(self._settings_path.parent),
+            str(config_dir),
             "JSON Files (*.json);;All Files (*.*)",
         )
         if not path_str:
@@ -1184,10 +1188,12 @@ class MainWindow(QMainWindow):
         self._log(f"Auto Sort: Picking {candy_name} at X={wx:.1f}, Y={wy:.1f}")
 
     def _load_program(self) -> None:
+        programs_dir = Path("config/programs")
+        programs_dir.mkdir(parents=True, exist_ok=True)
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Load Program",
-            str(Path.cwd() / "programs"),
+            str(programs_dir),
             "G-code Files (*.gcode *.nc *.txt);;All Files (*.*)",
         )
         if not path:
@@ -1203,10 +1209,12 @@ class MainWindow(QMainWindow):
         self._log(f"Program loaded: {path}")
 
     def _save_program(self) -> None:
+        programs_dir = Path("config/programs")
+        programs_dir.mkdir(parents=True, exist_ok=True)
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Program",
-            str(Path.cwd() / "programs" / "program.gcode"),
+            str(programs_dir / "program.gcode"),
             "G-code Files (*.gcode *.nc *.txt);;All Files (*.*)",
         )
         if not path:

@@ -1,47 +1,123 @@
 {
   "transform": {
-    "tx": 0.0,
-    "ty": 0.0,
-    "tz": 0.0,
-    "roll": 90.0,
-    "pitch": 180.0,
-    "yaw": -90.0
+    "tx": 60.0,
+    "ty": 254.0,
+    "tz": 105.0,
+    "roll": 0.0,
+    "pitch": 90.0,
+    "yaw": 90.0
   },
   "vision": {
-    "camera_index": 0,
+    "camera_index": 1,
     "show_ids": false,
     "show_advanced": false,
     "roi_width": 700,
     "roi_height": 500,
-    "id_bl": 0,
-    "id_br": 1,
-    "id_tr": 2,
-    "id_tl": 1,
-    "anchor_mode": "Center",
-    "corner_bl": "Top-Left",
+    "id_bl": 6,
+    "id_br": 7,
+    "id_tr": 8,
+    "id_tl": 9,
+    "anchor_mode": "Corner",
+    "corner_bl": "Top-Right",
     "corner_br": "Top-Left",
-    "corner_tr": "Top-Right",
+    "corner_tr": "Bottom-Left",
     "corner_tl": "Bottom-Right",
     "world_bl_x": 0.0,
-    "world_bl_y": 5.0,
-    "world_br_x": 300.0,
-    "world_br_y": 1.0,
-    "world_tr_x": 300.0,
-    "world_tr_y": 300.0,
+    "world_bl_y": 0.0,
+    "world_br_x": 120.0,
+    "world_br_y": 0.0,
+    "world_tr_x": 120.0,
+    "world_tr_y": 120.0,
     "world_tl_x": 0.0,
-    "world_tl_y": 300.0,
-    "gripper_close_dist": 5.0,
-    "gripper_open_dist": 20.0,
+    "world_tl_y": 120.0,
+    "target_x": 47.503,
+    "target_y": 25.722,
+    "target_z": -4.0,
+    "feed": 40.0,
+    "gripper_open_dist": 10.0,
+    "gripper_close_dist": 30.0,
     "gripper_feed": 4.0,
+    "jog_x_step": 10.0,
+    "jog_y_step": 10.0,
+    "jog_z_step": 10.0,
     "places": [
       {
-        "name": "P1",
-        "x": 350.0,
+        "name": "Lychee",
+        "x": 250.0,
+        "y": 200.0,
+        "z": 50.0
+      },
+      {
+        "name": "Lemon",
+        "x": -130.0,
+        "y": 200.0,
+        "z": 50.0
+      },
+      {
+        "name": "Guava",
+        "x": -100.0,
+        "y": 70.0,
+        "z": 50.0
+      },
+      {
+        "name": "Tamarind",
+        "x": 220.0,
+        "y": 70.0,
+        "z": 50.0
+      },
+      {
+        "name": "Energy",
+        "x": 200.0,
         "y": 0.0,
-        "z": 20.0,
-        "feed": 30.0,
-        "grip": "None"
+        "z": 50.0
       }
-    ]
-  }
+    ],
+    "pnp": {
+      "pick_x": 47.503,
+      "pick_y": 25.722,
+      "pick_z": -5.0,
+      "approach_z": 50.0,
+      "move_feed": 60.0,
+      "pick_feed": 30.0,
+      "place_index": 0,
+      "gcode": "G90                                                     ; absolute mode\nG1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{MOVE_FEED}      ; approach above pick\nM6                                                      ; gripper home\nG1 X{PICK_X} Y{PICK_Y} Z{PICK_Z} F{MOVE_FEED}          ; descend to pick\nM3 S{GRIP_CLOSE} F{GRIP_FEED}                           ; gripper close\nG1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{PICK_FEED}      ; retract up from pick\nG1 X{PLACE_X} Y{PLACE_Y} Z{APPROACH_Z} F{PICK_FEED}    ; approach above place\nG1 X{PLACE_X} Y{PLACE_Y} Z{PLACE_Z} F{PICK_FEED}       ; descend to place\nM5 S{GRIP_OPEN} F{GRIP_FEED}                            ; gripper open\nG1 X{PLACE_X} Y{PLACE_Y} Z{APPROACH_Z} F{MOVE_FEED}    ; retract up from place"
+    },
+    "detect_model_path": "C:/Users/Nguyen/Documents/MyDocument/Robot_Arm/Candy-Sorting/Detection/yolo26n/train/weights/best.onnx",
+    "detect_confidence": 0.5,
+    "detect_enabled": true,
+    "detect_require_roi": true,
+    "detect_class_filter": "All Classes",
+    "detect_idle_timeout": 1.5,
+    "detect_wake_delay": 0.5,
+    "detect_park_sequence": "G0 T10 T290 T30   ; park\nM18               ; disable motors",
+    "detect_wake_sequence": "G28; home",
+    "detect_colors": {
+      "0": [
+        168,
+        118,
+        49
+      ],
+      "1": [
+        88,
+        190,
+        53
+      ],
+      "2": [
+        47,
+        207,
+        245
+      ],
+      "3": [
+        63,
+        44,
+        193
+      ],
+      "4": [
+        164,
+        166,
+        13
+      ]
+    }
+  },
+  "teach_points": []
 }

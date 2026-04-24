@@ -29,6 +29,8 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QColorDialog,
+    QDialog,
 )
 
 try:
@@ -87,6 +89,15 @@ class VisionWidget(QWidget):
         # YOLO detection state
         self._detector = CandyDetector()
         self._detections: list[tuple[str, float, float, float]] = []  # (class, wx, wy, conf)
+
+        # Default detection colors (BGR)
+        self.det_colors: dict[int, tuple[int, int, int]] = {
+            0: (168, 118, 49),
+            1: (88, 190, 53),
+            2: (47, 207, 245),
+            3: (63, 44, 193),
+            4: (164, 166, 13),
+        }
 
         self._build_ui()
         self._connect_signals()
@@ -584,96 +595,83 @@ class VisionWidget(QWidget):
 
         overlay = frame.copy()
         ordered = self._detect_ordered_corners(overlay)
+        
+        roi = None
+        world_quad = None
+        h_src_to_world = None
+        h_src_to_roi = None
+        polygon = None
+
         if ordered is None:
             self._latest_roi_size = None
             self._latest_roi_to_world = None
             self.roi_frame_label.setText("ROI frame\n(need 4 anchors)")
             self.status_label.setText("ROI lost")
-            self._set_image(self.original_frame_label, overlay)
-            return
+        else:
+            polygon = ordered.astype(np.int32).reshape((-1, 1, 2))
+            cv2.polylines(overlay, [polygon], isClosed=True, color=(0, 255, 255), thickness=2)
 
-        self._render_roi(frame, overlay, ordered)
+            roi_w = self.roi_width_spin.value()
+            roi_h = self.roi_height_spin.value()
+            dst = self._roi_destination_points(roi_w, roi_h)
 
-    def _render_roi(self, frame, overlay, ordered) -> None:
-        polygon = ordered.astype(np.int32).reshape((-1, 1, 2))
-        cv2.polylines(overlay, [polygon], isClosed=True, color=(0, 255, 255), thickness=2)
+            h_src_to_roi = cv2.getPerspectiveTransform(ordered.astype(np.float32), dst.astype(np.float32))
+            roi = cv2.warpPerspective(frame, h_src_to_roi, (roi_w, roi_h))
 
-        roi_w = self.roi_width_spin.value()
-        roi_h = self.roi_height_spin.value()
-        dst = self._roi_destination_points(roi_w, roi_h)
-
-        h_src_to_roi = cv2.getPerspectiveTransform(ordered.astype(np.float32), dst.astype(np.float32))
-        roi = cv2.warpPerspective(frame, h_src_to_roi, (roi_w, roi_h))
-
-        self._latest_roi_size = (roi_w, roi_h)
-        world_quad = self._world_quad()
-        self._latest_roi_to_world = cv2.getPerspectiveTransform(dst.astype(np.float32), world_quad.astype(np.float32))
+            self._latest_roi_size = (roi_w, roi_h)
+            world_quad = self._world_quad()
+            self._latest_roi_to_world = cv2.getPerspectiveTransform(dst.astype(np.float32), world_quad.astype(np.float32))
+            h_src_to_world = cv2.getPerspectiveTransform(ordered.astype(np.float32), world_quad.astype(np.float32))
+            
+            self.status_label.setText("ROI detected")
 
         # --- YOLO detection overlay ---
         self._detections = []
-        if (
-            self._detector.is_loaded
-            and self.detect_enable_check.isChecked()
-            and self._latest_roi_to_world is not None
-        ):
-            # Determine class filter
-            cls_filter = None
-            filter_text = self.detect_class_combo.currentText()
-            if filter_text != "All Classes":
-                for i, name in enumerate(self._detector.class_names):
-                    if name == filter_text:
-                        cls_filter = i
-                        break
+        if self._detector.is_loaded and self.detect_enable_check.isChecked():
+            require_roi = self.detect_require_roi_check.isChecked()
+            
+            if (ordered is not None) or (not require_roi):
+                cls_filter = None
+                filter_text = self.detect_class_combo.currentText()
+                if filter_text != "All Classes":
+                    for i, name in enumerate(self._detector.class_names):
+                        if name == filter_text:
+                            cls_filter = i
+                            break
 
-            conf = self.detect_conf_spin.value()
-            # 1. Detect on the ORIGINAL unwarped frame (best for model accuracy)
-            dets = self._detector.detect(frame, conf=conf, class_filter=cls_filter)
+                conf = self.detect_conf_spin.value()
+                dets = self._detector.detect(frame, conf=conf, class_filter=cls_filter)
 
-            # Colors per class (matching Candy-Sorting scripts)
-            det_colors = {
-                0: (168, 118, 49),
-                1: (88, 190, 53),
-                2: (47, 207, 245),
-                3: (63, 44, 193),
-                4: (164, 166, 13),
-            }
+                for d in dets:
+                    if polygon is not None:
+                        if cv2.pointPolygonTest(polygon, (d.cx, d.cy), False) < 0:
+                            continue
 
-            # Direct homography: original frame -> world coordinates
-            h_src_to_world = cv2.getPerspectiveTransform(ordered.astype(np.float32), world_quad.astype(np.float32))
+                    color = self.det_colors.get(d.class_id, (0, 255, 255))
+                    cv2.rectangle(overlay, (d.x1, d.y1), (d.x2, d.y2), color, 2)
+                    cv2.circle(overlay, (int(d.cx), int(d.cy)), 5, color, -1)
+                    label = f"{d.class_name} {d.confidence:.2f}"
+                    cv2.putText(overlay, label, (d.x1, d.y1 - 6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
-            for d in dets:
-                # 2. Ignore detections outside the ArUco ROI polygon
-                if cv2.pointPolygonTest(polygon, (d.cx, d.cy), False) < 0:
-                    continue
+                    if h_src_to_world is not None and h_src_to_roi is not None and roi is not None:
+                        pt_src = np.array([[[d.cx, d.cy]]], dtype=np.float32)
+                        world_pt = cv2.perspectiveTransform(pt_src, h_src_to_world)[0][0]
+                        wx, wy = float(world_pt[0]), float(world_pt[1])
+                        self._detections.append((d.class_name, wx, wy, d.confidence))
 
-                # 3. Transform centroid from original pixel -> world coordinate
-                pt_src = np.array([[[d.cx, d.cy]]], dtype=np.float32)
-                world_pt = cv2.perspectiveTransform(pt_src, h_src_to_world)[0][0]
-                wx, wy = float(world_pt[0]), float(world_pt[1])
-                self._detections.append((d.class_name, wx, wy, d.confidence))
+                        roi_pt = cv2.perspectiveTransform(pt_src, h_src_to_roi)[0][0]
+                        rx, ry = int(roi_pt[0]), int(roi_pt[1])
+                        cv2.circle(roi, (rx, ry), 5, color, -1)
+                        cv2.putText(roi, d.class_name, (rx + 8, ry + 4),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
-                color = det_colors.get(d.class_id, (0, 255, 255))
-                
-                # 4. Draw bounding box and label on the Original Frame (overlay)
-                cv2.rectangle(overlay, (d.x1, d.y1), (d.x2, d.y2), color, 2)
-                cv2.circle(overlay, (int(d.cx), int(d.cy)), 5, color, -1)
-                label = f"{d.class_name} {d.confidence:.2f}"
-                cv2.putText(overlay, label, (d.x1, d.y1 - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+                n = len(self._detections) if polygon is not None else len(dets)
+                self.detect_status_label.setText(f"{n} detection(s)")
 
-                # 5. Transform centroid to ROI pixel and draw on the warped ROI view (for click-to-pick)
-                roi_pt = cv2.perspectiveTransform(pt_src, h_src_to_roi)[0][0]
-                rx, ry = int(roi_pt[0]), int(roi_pt[1])
-                cv2.circle(roi, (rx, ry), 5, color, -1)
-                cv2.putText(roi, d.class_name, (rx + 8, ry + 4),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
-
-            n = len(self._detections)
-            self.detect_status_label.setText(f"{n} detection(s)")
-
-        self._set_image(self.roi_frame_label, roi)
+        if roi is not None:
+            self._set_image(self.roi_frame_label, roi)
         self._set_image(self.original_frame_label, overlay)
-        self.status_label.setText("ROI detected")
 
     def _detect_ordered_corners(self, frame) -> Optional[Any]:
         if not CV_AVAILABLE:
@@ -1008,10 +1006,12 @@ class VisionWidget(QWidget):
         )
 
     def _save_places_file(self) -> None:
+        places_dir = Path("config/places")
+        places_dir.mkdir(parents=True, exist_ok=True)
         path_str, _ = QFileDialog.getSaveFileName(
             self,
             "Save Place Positions",
-            str(Path.home() / "Documents" / "robot_places.json"),
+            str(places_dir / "places.json"),
             "JSON Files (*.json);;All Files (*.*)",
         )
         if not path_str:
@@ -1032,10 +1032,12 @@ class VisionWidget(QWidget):
             self.status_label.setText(f"Save places failed: {exc}")
 
     def _load_places_file(self) -> None:
+        places_dir = Path("config/places")
+        places_dir.mkdir(parents=True, exist_ok=True)
         path_str, _ = QFileDialog.getOpenFileName(
             self,
             "Load Place Positions",
-            str(Path.home() / "Documents"),
+            str(places_dir),
             "JSON Files (*.json);;All Files (*.*)",
         )
         if not path_str:
@@ -1075,6 +1077,7 @@ class VisionWidget(QWidget):
         self.pnp_pick_z_spin = self._float_spin(0.0)
         self.pnp_approach_z_spin = self._float_spin(50.0)
         self.pnp_move_feed_spin = self._float_spin(30.0)
+        self.pnp_pick_feed_spin = self._float_spin(10.0)
 
         self.pnp_use_cursor_button = QPushButton("Use Cursor XY for Pick")
         self.pnp_use_cursor_button.setStyleSheet("background: #2d8f5a; color: #ffffff;")
@@ -1094,8 +1097,11 @@ class VisionWidget(QWidget):
         params.addWidget(self.pnp_approach_z_spin, 1, 1)
         params.addWidget(QLabel("Move Feed"), 1, 2)
         params.addWidget(self.pnp_move_feed_spin, 1, 3)
-        params.addWidget(QLabel("Place"), 1, 4)
-        params.addWidget(self.pnp_place_combo, 1, 5, 1, 2)
+        params.addWidget(QLabel("Pick Feed"), 1, 4)
+        params.addWidget(self.pnp_pick_feed_spin, 1, 5)
+
+        params.addWidget(QLabel("Place"), 2, 0)
+        params.addWidget(self.pnp_place_combo, 2, 1, 1, 6)
 
         layout.addLayout(params)
 
@@ -1108,11 +1114,13 @@ class VisionWidget(QWidget):
             "  {PICK_X} {PICK_Y} {PICK_Z}     — from Pick fields above\n"
             "  {PLACE_X} {PLACE_Y} {PLACE_Z}   — from selected Place\n"
             "  {APPROACH_Z}                     — from Approach Z field\n"
-            "  {FEED}                           — from Move Feed field\n"
+            "  {MOVE_FEED}                      — from Move Feed field (fast travel)\n"
+            "  {PICK_FEED}                      — from Pick Feed field (slow pick/place)\n"
             "  {GRIP_CLOSE} {GRIP_OPEN}         — from Gripper dist fields\n"
             "  {GRIP_FEED}                      — from Gripper feed field\n\n"
             "Example:\n"
-            "  G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{FEED}\n"
+            "  G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{MOVE_FEED}\n"
+            "  G1 X{PICK_X} Y{PICK_Y} Z{PICK_Z} F{PICK_FEED}\n"
             "  M3 S{GRIP_CLOSE} F{GRIP_FEED}"
         )
         self.pnp_gcode_edit.setMinimumHeight(300)
@@ -1151,9 +1159,11 @@ class VisionWidget(QWidget):
 
     def _pnp_save_template(self) -> None:
         """Save the current PnP G-code template to a file."""
+        templates_dir = Path("config/templates")
+        templates_dir.mkdir(parents=True, exist_ok=True)
         path, _ = QFileDialog.getSaveFileName(
             self, "Save PnP Template",
-            str(Path.cwd() / "templates" / "pnp_template.gcode"),
+            str(templates_dir / "pnp_template.gcode"),
             "G-code Files (*.gcode *.txt);;All Files (*.*)",
         )
         if not path:
@@ -1164,9 +1174,11 @@ class VisionWidget(QWidget):
 
     def _pnp_load_template(self) -> None:
         """Load a PnP G-code template from a file."""
+        templates_dir = Path("config/templates")
+        templates_dir.mkdir(parents=True, exist_ok=True)
         path, _ = QFileDialog.getOpenFileName(
             self, "Load PnP Template",
-            str(Path.cwd() / "templates"),
+            str(templates_dir),
             "G-code Files (*.gcode *.txt);;All Files (*.*)",
         )
         if not path:
@@ -1200,6 +1212,9 @@ class VisionWidget(QWidget):
         self.detect_enable_check.setChecked(False)
         self.detect_enable_check.setEnabled(False)  # until model loaded
 
+        self.detect_require_roi_check = QCheckBox("Require ROI")
+        self.detect_require_roi_check.setChecked(True)
+
         self.detect_conf_spin = QDoubleSpinBox()
         self.detect_conf_spin.setRange(0.05, 1.0)
         self.detect_conf_spin.setSingleStep(0.05)
@@ -1209,11 +1224,16 @@ class VisionWidget(QWidget):
         self.detect_class_combo = QComboBox()
         self.detect_class_combo.addItem("All Classes")
 
+        self.detect_color_btn = QPushButton("Colors...")
+        self.detect_color_btn.clicked.connect(self._edit_class_colors)
+
         settings_row.addWidget(self.detect_enable_check)
+        settings_row.addWidget(self.detect_require_roi_check)
         settings_row.addWidget(QLabel("Confidence"))
         settings_row.addWidget(self.detect_conf_spin)
         settings_row.addWidget(QLabel("Class"))
         settings_row.addWidget(self.detect_class_combo)
+        settings_row.addWidget(self.detect_color_btn)
         settings_row.addStretch(1)
         layout.addLayout(settings_row)
 
@@ -1303,9 +1323,11 @@ class VisionWidget(QWidget):
             )
             return
 
+        models_dir = Path("config/models")
+        models_dir.mkdir(parents=True, exist_ok=True)
         path, _ = QFileDialog.getOpenFileName(
             self, "Load Detection Model",
-            "",
+            str(models_dir),
             CandyDetector.supported_formats(),
         )
         if not path:
@@ -1335,6 +1357,93 @@ class VisionWidget(QWidget):
             self.detect_class_combo.addItem(cls_name)
 
         self.status_label.setText(f"Model loaded ({backend}): {path}")
+
+    def _edit_class_colors(self) -> None:
+        """Open a dialog to edit class detection colors."""
+        if not self._detector.class_names:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "No Model", "Please load a model first to edit its class colors.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Class Colors")
+        dialog.resize(320, 450)
+        main_layout = QVBoxLayout(dialog)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content_widget = QWidget()
+        layout = QFormLayout(content_widget)
+
+        color_buttons = {}
+        for i, name in enumerate(self._detector.class_names):
+            b, g, r = self.det_colors.get(i, (0, 255, 255))
+            btn = QPushButton()
+            btn.setStyleSheet(f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;")
+            btn.setFixedSize(60, 24)
+            layout.addRow(QLabel(f"{i}: {name}"), btn)
+            color_buttons[i] = btn
+
+            def make_handler(cls_id=i, button=btn):
+                def handler():
+                    from PyQt6.QtGui import QColor
+                    cb, cg, cr = self.det_colors.get(cls_id, (0, 255, 255))
+                    init_color = QColor(cr, cg, cb)
+                    c = QColorDialog.getColor(init_color, dialog, f"Select Color for {self._detector.class_names[cls_id]}")
+                    if c.isValid():
+                        self.det_colors[cls_id] = (c.blue(), c.green(), c.red())
+                        button.setStyleSheet(f"background-color: rgb({c.red()}, {c.green()}, {c.blue()}); border: 1px solid #555;")
+                return handler
+
+            btn.clicked.connect(make_handler())
+
+        scroll.setWidget(content_widget)
+        main_layout.addWidget(scroll)
+
+        # Buttons for Import / Export
+        btn_layout = QHBoxLayout()
+        export_btn = QPushButton("Export")
+        import_btn = QPushButton("Import")
+        close_btn = QPushButton("Done")
+        
+        btn_layout.addWidget(import_btn)
+        btn_layout.addWidget(export_btn)
+        btn_layout.addStretch(1)
+        btn_layout.addWidget(close_btn)
+
+        main_layout.addLayout(btn_layout)
+
+        def do_export():
+            colors_dir = Path("config/colors")
+            colors_dir.mkdir(parents=True, exist_ok=True)
+            path, _ = QFileDialog.getSaveFileName(dialog, "Export Colors", str(colors_dir / "theme.json"), "JSON Files (*.json)")
+            if path:
+                with open(path, "w") as f:
+                    json.dump(self.det_colors, f, indent=4)
+
+        def do_import():
+            colors_dir = Path("config/colors")
+            colors_dir.mkdir(parents=True, exist_ok=True)
+            path, _ = QFileDialog.getOpenFileName(dialog, "Import Colors", str(colors_dir), "JSON Files (*.json)")
+            if path:
+                try:
+                    with open(path, "r") as f:
+                        data = json.load(f)
+                    for k, v in data.items():
+                        cls_id = int(k)
+                        self.det_colors[cls_id] = (int(v[0]), int(v[1]), int(v[2]))
+                        if cls_id in color_buttons:
+                            b, g, r = self.det_colors[cls_id]
+                            color_buttons[cls_id].setStyleSheet(f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;")
+                except Exception as e:
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.warning(dialog, "Error", f"Failed to load colors: {e}")
+
+        export_btn.clicked.connect(do_export)
+        import_btn.clicked.connect(do_import)
+        close_btn.clicked.connect(dialog.accept)
+
+        dialog.exec()
 
     def _on_auto_sort_clicked(self, checked: bool) -> None:
         """Toggle the continuous auto-sort state."""
@@ -1422,7 +1531,8 @@ class VisionWidget(QWidget):
             "PLACE_Y": g(ply),
             "PLACE_Z": g(plz),
             "APPROACH_Z": g(self.pnp_approach_z_spin.value()),
-            "FEED": g(self.pnp_move_feed_spin.value()),
+            "MOVE_FEED": g(self.pnp_move_feed_spin.value()),
+            "PICK_FEED": g(self.pnp_pick_feed_spin.value()),
             "GRIP_CLOSE": g(self.gripper_close_dist_spin.value()),
             "GRIP_OPEN": g(self.gripper_open_dist_spin.value()),
             "GRIP_FEED": g(self.gripper_feed_spin.value()),
@@ -1431,17 +1541,16 @@ class VisionWidget(QWidget):
     def _pnp_generate_default(self) -> None:
         """Generate the default pick-and-place G-code template with variables."""
         lines = [
-            "G90                                             ; absolute mode",
-            "G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{FEED}   ; approach above pick",
-            "G1 X{PICK_X} Y{PICK_Y} Z{PICK_Z} F{FEED}       ; descend to pick",
-            "M3 S{GRIP_CLOSE} F{GRIP_FEED}                   ; gripper close",
-            "G4 P300                                         ; wait for grip",
-            "G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{FEED}   ; retract up from pick",
-            "G1 X{PLACE_X} Y{PLACE_Y} Z{APPROACH_Z} F{FEED} ; approach above place",
-            "G1 X{PLACE_X} Y{PLACE_Y} Z{PLACE_Z} F{FEED}    ; descend to place",
-            "M5 S{GRIP_OPEN} F{GRIP_FEED}                    ; gripper open",
-            "G4 P300                                         ; wait for release",
-            "G1 X{PLACE_X} Y{PLACE_Y} Z{APPROACH_Z} F{FEED} ; retract up from place",
+            "G90                                                     ; absolute mode",
+            "G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{MOVE_FEED}      ; approach above pick",
+            "M6                                                      ; gripper home",
+            "G1 X{PICK_X} Y{PICK_Y} Z{PICK_Z} F{MOVE_FEED}          ; descend to pick",
+            "M3 S{GRIP_CLOSE} F{GRIP_FEED}                           ; gripper close",
+            "G1 X{PICK_X} Y{PICK_Y} Z{APPROACH_Z} F{PICK_FEED}      ; retract up from pick",
+            "G1 X{PLACE_X} Y{PLACE_Y} Z{APPROACH_Z} F{PICK_FEED}    ; approach above place",
+            "G1 X{PLACE_X} Y{PLACE_Y} Z{PLACE_Z} F{PICK_FEED}       ; descend to place",
+            "M5 S{GRIP_OPEN} F{GRIP_FEED}                            ; gripper open",
+            "G1 X{PLACE_X} Y{PLACE_Y} Z{APPROACH_Z} F{MOVE_FEED}    ; retract up from place",
         ]
 
         self.pnp_gcode_edit.setPlainText("\n".join(lines))
@@ -1491,6 +1600,7 @@ class VisionWidget(QWidget):
             "pick_z": self.pnp_pick_z_spin.value(),
             "approach_z": self.pnp_approach_z_spin.value(),
             "move_feed": self.pnp_move_feed_spin.value(),
+            "pick_feed": self.pnp_pick_feed_spin.value(),
             "place_index": self.pnp_place_combo.currentIndex(),
             "gcode": self.pnp_gcode_edit.toPlainText(),
         }
@@ -1501,6 +1611,7 @@ class VisionWidget(QWidget):
         self.pnp_pick_z_spin.setValue(float(cfg.get("pick_z", 0.0)))
         self.pnp_approach_z_spin.setValue(float(cfg.get("approach_z", 50.0)))
         self.pnp_move_feed_spin.setValue(float(cfg.get("move_feed", 30.0)))
+        self.pnp_pick_feed_spin.setValue(float(cfg.get("pick_feed", 10.0)))
 
         gcode = cfg.get("gcode", "")
         if gcode:
@@ -1557,11 +1668,13 @@ class VisionWidget(QWidget):
             "detect_model_path": self._detector.model_path,
             "detect_confidence": self.detect_conf_spin.value(),
             "detect_enabled": self.detect_enable_check.isChecked(),
+            "detect_require_roi": self.detect_require_roi_check.isChecked(),
             "detect_class_filter": self.detect_class_combo.currentText(),
             "detect_idle_timeout": self.detect_idle_timeout_spin.value(),
             "detect_wake_delay": self.detect_wake_delay_spin.value(),
             "detect_park_sequence": self.detect_park_edit.toPlainText(),
             "detect_wake_sequence": self.detect_wake_edit.toPlainText(),
+            "detect_colors": {str(k): list(v) for k, v in self.det_colors.items()},
         }
 
     def apply_settings(self, settings: dict[str, Any]) -> None:
@@ -1639,6 +1752,7 @@ class VisionWidget(QWidget):
 
         self.detect_conf_spin.setValue(float(settings.get("detect_confidence", 0.5)))
         self.detect_enable_check.setChecked(bool(settings.get("detect_enabled", False)))
+        self.detect_require_roi_check.setChecked(bool(settings.get("detect_require_roi", True)))
         cls_filter = settings.get("detect_class_filter", "All Classes")
         idx = self.detect_class_combo.findText(str(cls_filter))
         if idx >= 0:
@@ -1652,3 +1766,10 @@ class VisionWidget(QWidget):
         wake_seq = settings.get("detect_wake_sequence", "")
         if wake_seq:
             self.detect_wake_edit.setPlainText(wake_seq)
+
+        saved_colors = settings.get("detect_colors", {})
+        for k, v in saved_colors.items():
+            try:
+                self.det_colors[int(k)] = (int(v[0]), int(v[1]), int(v[2]))
+            except (ValueError, TypeError, IndexError):
+                pass
