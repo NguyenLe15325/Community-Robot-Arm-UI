@@ -10,7 +10,7 @@
   "vision": {
     "camera_index": 1,
     "show_ids": false,
-    "show_advanced": false,
+    "show_advanced": true,
     "roi_width": 700,
     "roi_height": 500,
     "id_bl": 6,
@@ -118,6 +118,21 @@
         13
       ]
     }
+  },
+  "draw": {
+    "bounds": {
+      "xmin": 0.0,
+      "xmax": 120.0,
+      "ymin": 0.0,
+      "ymax": 120.0
+    },
+    "draw_z": 8.0,
+    "lift_z": 36.0,
+    "feed": 30.0,
+    "travel_feed": 60.0,
+    "min_step": 2.0,
+    "simplify_tol": 1.0,
+    "lock_aspect": true
   },
   "teach_points": []
 }

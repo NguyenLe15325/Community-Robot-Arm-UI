@@ -44,6 +44,7 @@ from robot_arm_ui.core.gcode_utils import build_cartesian_move, build_joint_move
 from robot_arm_ui.core.serial_client import SerialClient
 from robot_arm_ui.models.program_model import ProgramModel
 from robot_arm_ui.ui.vision_widget import VisionWidget
+from robot_arm_ui.ui.draw_widget import DrawWidget
 
 
 class TerminalCommandLineEdit(QLineEdit):
@@ -133,6 +134,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(self._wrap_scroll(self._build_control_page()), "Control")
+        self.tabs.addTab(self._build_draw_page(), "Draw")
         self.tabs.addTab(self._build_vision_page(), "Vision")
         self.tabs.addTab(self._build_program_page(), "Program")
         self.tabs.addTab(self._build_terminal_page(), "Terminal")
@@ -149,6 +151,13 @@ class MainWindow(QMainWindow):
         self.vision_widget.save_settings_requested.connect(self._save_app_settings_as)
         self.vision_widget.load_settings_requested.connect(self._load_app_settings_from)
         return self.vision_widget
+
+    def _build_draw_page(self) -> QWidget:
+        self.draw_widget = DrawWidget()
+        self.draw_widget.path_request_world.connect(self._on_draw_path_request)
+        self.draw_widget.export_program_requested.connect(self._on_draw_export_program)
+        self.draw_widget.save_gcode_requested.connect(self._on_draw_save_gcode)
+        return self.draw_widget
 
     def _default_external_settings_path(self) -> Path:
         return default_settings_path()
@@ -674,6 +683,7 @@ class MainWindow(QMainWindow):
                     "yaw": self.yaw_spin.value(),
                 },
                 "vision": self.vision_widget.get_settings() if hasattr(self, "vision_widget") else {},
+                "draw": self.draw_widget.get_settings() if hasattr(self, "draw_widget") else {},
                 "teach_points": self._get_teach_points(),
             }
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -711,6 +721,10 @@ class MainWindow(QMainWindow):
                     self.gripper_feed_spin.setValue(float(vision.get("gripper_feed", self.gripper_feed_spin.value())))
                 except Exception:
                     pass
+
+            draw = payload.get("draw", {})
+            if hasattr(self, "draw_widget") and isinstance(draw, dict):
+                self.draw_widget.apply_settings(draw)
 
             # Teach points
             teach_pts = payload.get("teach_points", [])
@@ -916,6 +930,121 @@ class MainWindow(QMainWindow):
             self._submit_command(cmd, source="manual", recordable=True)
         elif action == "status":
             self._submit_command("M3001", source="manual", recordable=False)
+
+    def _build_draw_commands(
+        self,
+        strokes: list,
+        draw_z: float,
+        lift_z: float,
+        feed: float,
+        travel_feed: float,
+    ) -> tuple[list[str], int, int]:
+        if not strokes:
+            return [], 0, 0
+
+        commands: list[str] = ["G90"]
+        stroke_count = 0
+        point_count = 0
+
+        for stroke in strokes:
+            if not stroke:
+                continue
+            stroke_count += 1
+            point_count += len(stroke)
+
+            wx0, wy0 = stroke[0]
+            rx, ry, rz = self.transform.world_to_robot_position(wx0, wy0, lift_z)
+            commands.append(build_cartesian_move(rx, ry, rz, travel_feed))
+
+            rx, ry, rz = self.transform.world_to_robot_position(wx0, wy0, draw_z)
+            commands.append(build_cartesian_move(rx, ry, rz, travel_feed))
+
+            for wx, wy in stroke[1:]:
+                rx, ry, rz = self.transform.world_to_robot_position(wx, wy, draw_z)
+                commands.append(build_cartesian_move(rx, ry, rz, feed))
+
+            wx_last, wy_last = stroke[-1]
+            rx, ry, rz = self.transform.world_to_robot_position(wx_last, wy_last, lift_z)
+            commands.append(build_cartesian_move(rx, ry, rz, travel_feed))
+
+        if len(commands) == 1:
+            return [], 0, 0
+        return commands, stroke_count, point_count
+
+    def _on_draw_path_request(
+        self,
+        strokes: list,
+        draw_z: float,
+        lift_z: float,
+        feed: float,
+        travel_feed: float,
+    ) -> None:
+        commands, stroke_count, point_count = self._build_draw_commands(
+            strokes, draw_z, lift_z, feed, travel_feed
+        )
+        if not commands:
+            self._log("Draw: no valid strokes to queue")
+            return
+
+        self._submit_commands(commands, source="draw", recordable=True)
+        self._log(
+            f"Draw: {stroke_count} stroke(s), {point_count} point(s), {len(commands)} command(s) queued"
+        )
+
+    def _on_draw_export_program(
+        self,
+        strokes: list,
+        draw_z: float,
+        lift_z: float,
+        feed: float,
+        travel_feed: float,
+    ) -> None:
+        commands, stroke_count, point_count = self._build_draw_commands(
+            strokes, draw_z, lift_z, feed, travel_feed
+        )
+        if not commands:
+            self._log("Draw: no valid strokes to export")
+            return
+
+        self.program_editor.setPlainText("\n".join(commands))
+        self._log(
+            f"Draw: exported {stroke_count} stroke(s), {point_count} point(s) to Program"
+        )
+
+    def _on_draw_save_gcode(
+        self,
+        strokes: list,
+        draw_z: float,
+        lift_z: float,
+        feed: float,
+        travel_feed: float,
+    ) -> None:
+        commands, stroke_count, point_count = self._build_draw_commands(
+            strokes, draw_z, lift_z, feed, travel_feed
+        )
+        if not commands:
+            self._log("Draw: no valid strokes to save")
+            return
+
+        programs_dir = get_programs_dir()
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Draw G-code",
+            str(programs_dir / "draw.gcode"),
+            "G-code Files (*.gcode *.nc *.txt);;All Files (*.*)",
+        )
+        if not path:
+            return
+
+        try:
+            Path(path).write_text("\n".join(commands) + "\n", encoding="utf-8")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Draw G-code", f"Failed to save file:\n{exc}")
+            return
+
+        self._log(
+            f"Draw: saved {stroke_count} stroke(s), {point_count} point(s) to {path}"
+        )
 
     def _on_vision_place_request(
         self,
